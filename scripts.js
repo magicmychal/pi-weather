@@ -1,6 +1,5 @@
 // Configuration
 const REFRESH_INTERVAL = 600000; // Refresh every 10 minutes
-const RADAR_REFRESH_INTERVAL = 300000; // Refresh radar every 5 minutes
 
 // Set your location here (city name and country)
 const LOCATION = {
@@ -11,10 +10,6 @@ const LOCATION = {
 let latitude = null;
 let longitude = null;
 let locationName = '';
-let map = null;
-let radarLayers = [];
-let animationPosition = 0;
-let animationTimer = null;
 
 // Weather code to description and emoji mapping (Open-Meteo WMO Weather interpretation codes)
 const weatherCodes = {
@@ -110,82 +105,6 @@ function updateWeatherDisplay(data) {
     document.getElementById('description').textContent = weather.description;
 }
 
-// Initialize the map
-function initMap() {
-    map = L.map('map', {
-        center: [latitude, longitude],
-        zoom: 8,
-        zoomControl: false,
-        attributionControl: false,
-        dragging: false,
-        scrollWheelZoom: false,
-        doubleClickZoom: false,
-        boxZoom: false,
-        keyboard: false,
-        tap: false
-    });
-
-    // Add OpenStreetMap base layer
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19
-    }).addTo(map);
-
-    // Load RainViewer radar
-    loadRainViewer();
-}
-
-// Load RainViewer radar data
-async function loadRainViewer() {
-    try {
-        const response = await fetch('https://api.rainviewer.com/public/weather-maps.json');
-        const data = await response.json();
-        
-        // Clear existing radar layers
-        radarLayers.forEach(layer => map.removeLayer(layer));
-        radarLayers = [];
-        
-        // Get available radar frames (last 10 frames for animation)
-        const availableRadar = data.radar.past;
-        const framesToShow = availableRadar.slice(-10);
-        
-        // Add radar layers
-        framesToShow.forEach((frame, index) => {
-            const radarLayer = L.tileLayer(
-                `https://tilecache.rainviewer.com${frame.path}/256/{z}/{x}/{y}/2/1_1.png`,
-                {
-                    tileSize: 256,
-                    opacity: 0,
-                    zIndex: 10 + index
-                }
-            );
-            radarLayer.addTo(map);
-            radarLayers.push(radarLayer);
-        });
-        
-        // Start animation
-        if (animationTimer) clearInterval(animationTimer);
-        animateRadar();
-    } catch (error) {
-        console.error('Error loading RainViewer data:', error);
-    }
-}
-
-// Animate radar frames
-function animateRadar() {
-    if (radarLayers.length === 0) return;
-    
-    animationTimer = setInterval(() => {
-        // Hide all layers
-        radarLayers.forEach(layer => layer.setOpacity(0));
-        
-        // Show current frame
-        radarLayers[animationPosition].setOpacity(0.6);
-        
-        // Move to next frame
-        animationPosition = (animationPosition + 1) % radarLayers.length;
-    }, 500); // Change frame every 500ms
-}
-
 // Update date and time display
 function updateDateTime() {
     const now = new Date();
@@ -203,7 +122,6 @@ function updateDateTime() {
 async function init() {
     try {
         await getCoordinatesFromCity();
-        initMap();
         await fetchWeather();
         updateDateTime();
         
@@ -212,9 +130,6 @@ async function init() {
         
         // Refresh weather data periodically
         setInterval(fetchWeather, REFRESH_INTERVAL);
-        
-        // Refresh radar periodically
-        setInterval(loadRainViewer, RADAR_REFRESH_INTERVAL);
     } catch (error) {
         console.error('Initialization error:', error);
         document.getElementById('location').textContent = 'Error loading weather';
