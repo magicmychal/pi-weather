@@ -1,14 +1,15 @@
 # Pi Weather Display
 
-A fullscreen weather display application designed for Raspberry Pi, showing real-time weather information with a beautiful map background.
+A fullscreen weather display application designed for Raspberry Pi, showing real-time weather information with a beautiful gradient background.
 
 ## Features
 
 - Real-time weather data display
 - Temperature and weather conditions
-- Interactive map background
+- Beautiful gradient background
 - Fullscreen kiosk mode for Raspberry Pi
 - Auto-start on boot
+- Available in two versions: Web (HTML/CSS/JS) and Native (Python/Tkinter)
 
 ## Setup Instructions for Raspberry Pi
 
@@ -16,9 +17,15 @@ A fullscreen weather display application designed for Raspberry Pi, showing real
 
 1. Raspberry Pi with Raspberry Pi OS (formerly Raspbian) installed
 2. Internet connection
-3. Chromium browser (usually pre-installed)
+3. **Choose one:**
+   - **Native Python version** (recommended for Pi Zero W): Python 3 + Tkinter (pre-installed)
+   - **Web version**: NetSurf or Chromium browser
 
 ### Installation Steps
+
+## Option A: Native Python Version (Recommended for Pi Zero W)
+
+The Python version is much lighter and faster on limited hardware like the Pi Zero W.
 
 #### 1. Install Required Packages
 
@@ -26,12 +33,12 @@ Open a terminal on your Raspberry Pi and run:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y chromium-browser unclutter xdotool
+sudo apt-get install -y python3-tk python3-requests unclutter
 ```
 
-- `chromium-browser`: Web browser for displaying the app
+- `python3-tk`: Tkinter GUI library (usually pre-installed)
+- `python3-requests`: HTTP library for API calls
 - `unclutter`: Hides the mouse cursor after inactivity
-- `xdotool`: Utility for window management (optional but recommended)
 
 #### 2. Clone or Copy the Project
 
@@ -48,7 +55,7 @@ Or if you're copying files manually, ensure all files are in a single directory 
 #### 3. Make the Startup Script Executable
 
 ```bash
-chmod +x start-kiosk.sh
+chmod +x start-native.sh
 ```
 
 #### 4. Configure Autostart
@@ -65,8 +72,8 @@ Paste the following content (adjust the path if your project is in a different l
 ```ini
 [Desktop Entry]
 Type=Application
-Name=Pi Weather Kiosk
-Exec=/home/pi/pi-weather/start-kiosk.sh
+Name=Pi Weather Display
+Exec=/home/pi/pi-weather/start-native.sh
 X-GNOME-Autostart-enabled=true
 ```
 
@@ -89,9 +96,16 @@ xserver-command=X -s 0 -dpms
 
 Save and exit.
 
-#### 6. Configure Weather API (if needed)
+#### 6. Configure Your Location
 
-If your weather application requires an API key, edit `scripts.js` and add your API credentials.
+Edit `weather_display.py` and change the location:
+
+```python
+LOCATION = {
+    'city': 'Your City',
+    'country': 'Your Country'
+}
+```
 
 #### 7. Reboot
 
@@ -103,23 +117,64 @@ After rebooting, the weather display should automatically launch in fullscreen m
 
 ## Manual Testing
 
-To test the kiosk mode without rebooting:
+To test without rebooting:
 
+**Python version:**
+```bash
+cd /home/pi/pi-weather
+python3 weather_display.py
+```
+Press `Escape` to exit fullscreen, `F11` to re-enter fullscreen.
+
+**Web version:**
 ```bash
 cd /home/pi/pi-weather
 ./start-kiosk.sh
 ```
+Press `Alt+F4` or `Ctrl+W` to exit.
 
-Press `Alt+F4` or `Ctrl+W` to exit fullscreen mode for testing.
+## Option B: Web Version (NetSurf or Chromium)
+
+If you prefer the web version:
+
+#### 1. Install Browser
+
+**For NetSurf (lightweight):**
+```bash
+sudo apt-get install netsurf-gtk
+```
+
+**For Chromium:**
+```bash
+sudo apt-get install chromium-browser
+```
+
+#### 2. Use the Web Startup Script
+
+```bash
+chmod +x start-kiosk.sh
+```
+
+Edit `start-kiosk.sh` to use `netsurf-gtk` instead of `chromium-browser` if desired.
+
+#### 3. Configure Location
+
+Edit `scripts.js` and change the location in the LOCATION constant.
 
 ## Troubleshooting
 
 ### Display doesn't start automatically
 - Check that the path in `pi-weather.desktop` matches your actual project location
-- Verify the script has execute permissions: `ls -l start-kiosk.sh`
+- Verify the script has execute permissions: `ls -l start-native.sh`
 - Check logs: `cat ~/.xsession-errors`
 
-### Chromium shows error pages
+### Python version shows errors
+- Ensure Python 3 is installed: `python3 --version`
+- Install missing packages: `sudo apt-get install python3-tk python3-requests`
+- Verify internet connection for API calls
+- Check for errors: `python3 weather_display.py`
+
+### Browser version shows error pages
 - Ensure all files (index.html, scripts.js, styles.css) are in the same directory
 - Check file permissions: `chmod 644 index.html scripts.js styles.css`
 - Verify internet connection for external resources
@@ -132,11 +187,15 @@ Press `Alt+F4` or `Ctrl+W` to exit fullscreen mode for testing.
 - Verify screen blanking is disabled in lightdm.conf
 - Add `xset s off` commands to the start script (already included)
 
-## Stopping the Kiosk
+## Stopping the Display
 
-To exit kiosk mode:
-- Press `Alt+F4` to close Chromium
-- Or SSH into the Pi and run: `pkill chromium-browser`
+**Python version:**
+- Press `Escape` to exit fullscreen (won't close the app)
+- Or SSH into the Pi and run: `pkill -f weather_display.py`
+
+**Browser version:**
+- Press `Alt+F4` to close the browser
+- Or SSH into the Pi and run: `pkill chromium-browser` or `pkill netsurf-gtk`
 
 ## Customization
 
@@ -154,10 +213,12 @@ sleep 15  # Wait 15 seconds instead of 10
 
 ```
 pi-weather/
-├── index.html          # Main HTML file
-├── scripts.js          # JavaScript for weather functionality
-├── styles.css          # Styling
-├── start-kiosk.sh      # Kiosk mode startup script
+├── weather_display.py  # Native Python application (recommended)
+├── start-native.sh     # Startup script for Python version
+├── index.html          # Web version HTML
+├── scripts.js          # Web version JavaScript
+├── styles.css          # Web version styling
+├── start-kiosk.sh      # Web version startup script
 └── README.md           # This file
 ```
 
