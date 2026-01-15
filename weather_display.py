@@ -102,7 +102,7 @@ class WeatherDisplay:
         self.temp_label = tk.Label(
             self.canvas,
             text="--°",
-            font=('Segoe UI', 120, 'ultralight'),
+            font=('Segoe UI', 120),
             fg='white',
             bg='#667eea'
         )
