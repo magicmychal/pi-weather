@@ -115,7 +115,7 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="Loading location...",
-            font=('Segoe UI', 36, 'normal'),
+            font=('Segoe UI', 30, 'normal'),
             fill='white',
             anchor='n',
             tags=('location',)
@@ -125,9 +125,9 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="--°",
-            font=('Segoe UI', 90),
+            font=('Segoe UI', 78),
             fill='white',
-            anchor='e',
+            anchor='w',
             tags=('temperature',)
         )
 
@@ -135,19 +135,19 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="--",
-            font=('Segoe UI', 22, 'normal'),
+            font=('Segoe UI', 18, 'normal'),
             fill='white',
-            anchor='n',
+            anchor='w',
             tags=('description',)
         )
 
-        # Date/Time text (24h format, placed next to temperature)
+        # Date/Time text (24h format, right-aligned toward divider)
         self.canvas.create_text(
             0, 0,
             text="--:--",
-            font=('Segoe UI', 90),
+            font=('Segoe UI', 78),
             fill='white',
-            anchor='w',
+            anchor='e',
             tags=('datetime',)
         )
 
@@ -164,9 +164,9 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="Air quality: --",
-            font=('Segoe UI', 22, 'normal'),
+            font=('Segoe UI', 18, 'normal'),
             fill='white',
-            anchor='n',
+            anchor='w',
             tags=('air_quality',)
         )
 
@@ -201,26 +201,29 @@ class WeatherDisplay:
         self.draw_gradient()
         
         # Position location at top center
-        self.canvas.coords('location', width // 2, height * 0.10)
-        
-        # Left side: Clock (time)
-        clock_x = width // 4
-        clock_y = height * 0.42
-        self.canvas.coords('datetime', clock_x, clock_y)
+        self.canvas.coords('location', width // 2, height * 0.09)
         
         # Divider line in the middle
         divider_x = width // 2
-        self.canvas.coords('divider', divider_x, height * 0.18, divider_x, height * 0.78)
+        gap = int(width * 0.02)  # small gap between content and divider
+
+        # Left panel: Clock (time), right-aligned toward divider
+        clock_x = divider_x - gap
+        clock_y = height * 0.40
+        self.canvas.coords('datetime', clock_x, clock_y)
         
-        # Right side: Temperature, weather, and air quality (centered on right half)
-        right_center_x = width * 0.75
-        temp_y = height * 0.36
-        description_y = height * 0.48
-        air_quality_y = height * 0.58
+        # Divider line
+        self.canvas.coords('divider', divider_x, height * 0.17, divider_x, height * 0.77)
         
-        self.canvas.coords('temperature', right_center_x, temp_y)
-        self.canvas.coords('description', right_center_x, description_y)
-        self.canvas.coords('air_quality', right_center_x, air_quality_y)
+        # Right panel: Temperature, weather, and air quality (left-aligned away from divider)
+        right_x = divider_x + gap
+        temp_y = height * 0.34
+        description_y = height * 0.46
+        air_quality_y = height * 0.56
+        
+        self.canvas.coords('temperature', right_x, temp_y)
+        self.canvas.coords('description', right_x, description_y)
+        self.canvas.coords('air_quality', right_x, air_quality_y)
         
         # Position logo and button
         self.canvas.coords('airly_logo', width - 20, height - 20)
@@ -521,7 +524,7 @@ class WeatherDisplay:
                 self.canvas.create_text(
                     0, 0,
                     text="Airly",
-                        font=('Segoe UI', 18, 'bold'),
+                        font=('Segoe UI', 16, 'bold'),
                     fill='white',
                     anchor='se',
                     tags=('airly_logo_text',)
