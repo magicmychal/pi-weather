@@ -6,10 +6,13 @@ A fullscreen weather display application designed for Raspberry Pi, showing real
 
 - Real-time weather data display
 - Temperature and weather conditions
-- Beautiful gradient background
+- Left-side large clock with a center divider; right-side condensed weather panel (temperature, condition, air quality)
+- Air quality via Airly API with verbal status (e.g., "Open the windows, go out!") and scheduled updates at 06:00, 15:00, and 20:00
+- Beautiful time/weather-aware gradient background
+- Airly logo displayed at the bottom-right
+- Gradient Demo button (debug-only)
 - Fullscreen kiosk mode for Raspberry Pi
 - Auto-start on boot
-- Available in two versions: Web (HTML/CSS/JS) and Native (Python/Tkinter)
 
 ## Setup Instructions for Raspberry Pi
 
@@ -19,7 +22,6 @@ A fullscreen weather display application designed for Raspberry Pi, showing real
 2. Internet connection
 3. **Choose one:**
    - **Native Python version** (recommended for Pi Zero W): Python 3 + Tkinter (pre-installed)
-   - **Web version**: NetSurf or Chromium browser
 
 ### Installation Steps
 
@@ -39,6 +41,12 @@ sudo apt-get install -y python3-tk python3-requests unclutter
 - `python3-tk`: Tkinter GUI library (usually pre-installed)
 - `python3-requests`: HTTP library for API calls
 - `unclutter`: Hides the mouse cursor after inactivity
+
+Install Python package dependencies (including Pillow and dotenv):
+
+```bash
+pip3 install -r requirements.txt
+```
 
 #### 2. Clone or Copy the Project
 
@@ -107,7 +115,28 @@ LOCATION = {
 }
 ```
 
-#### 7. Reboot
+#### 7. Configure Environment Variables
+
+Copy the example file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set:
+
+```
+AIRLY_API_KEY=your_airly_api_key
+AIRLY_LATITUDE=52.52
+AIRLY_LONGITUDE=13.405
+AIRLY_MAX_DISTANCE_KM=5
+DEBUG=false
+```
+
+- `DEBUG=true` shows the Gradient Demo button; `false` hides it.
+- Latitude/longitude are used to locate the nearest Airly installation.
+
+#### 8. Reboot
 
 ```bash
 sudo reboot
@@ -171,8 +200,14 @@ Edit `scripts.js` and change the location in the LOCATION constant.
 ### Python version shows errors
 - Ensure Python 3 is installed: `python3 --version`
 - Install missing packages: `sudo apt-get install python3-tk python3-requests`
+- Install Python dependencies: `pip3 install -r requirements.txt`
 - Verify internet connection for API calls
 - Check for errors: `python3 weather_display.py`
+
+### Airly logo not visible
+- Ensure internet access to the Airly CDN
+- Confirm Pillow is installed: `pip3 install Pillow`
+- The app falls back to a text placeholder if the image cannot be fetched
 
 ### Browser version shows error pages
 - Ensure all files (index.html, scripts.js, styles.css) are in the same directory
@@ -219,6 +254,8 @@ pi-weather/
 ├── scripts.js          # Web version JavaScript
 ├── styles.css          # Web version styling
 ├── start-kiosk.sh      # Web version startup script
+├── requirements.txt    # Python dependencies (requests, python-dotenv, Pillow)
+├── .env.example        # Environment variable template
 └── README.md           # This file
 ```
 
