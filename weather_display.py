@@ -8,7 +8,6 @@ import tkinter as tk
 from tkinter import font
 import requests
 from datetime import datetime
-import threading
 import time
 import os
 from dotenv import load_dotenv
@@ -17,8 +16,8 @@ from io import BytesIO
 from urllib.request import urlopen
 
 # Configuration
-REFRESH_INTERVAL = 600  # Refresh weather every 10 minutes (in seconds)
-TIME_UPDATE_INTERVAL = 60  # Update time every minute (in seconds)
+REFRESH_INTERVAL = 1800  # Refresh weather every 30 minutes (in seconds)
+TIME_UPDATE_INTERVAL = 59  # Update time every minute (in seconds)
 
 # Load environment variables
 load_dotenv()
@@ -100,6 +99,13 @@ class WeatherDisplay:
         self.last_aqi_fetch_hour = None
         self.debug_enabled = DEBUG
         
+        # Performance optimizations for Pi Zero
+        self._font_cache = {}  # Cache Font objects to avoid repeated creation
+        self._resize_after_id = None  # Debounce resize events
+        self._weather_after_id = None  # Scheduled weather update
+        self._time_after_id = None  # Scheduled time update
+        self._aqi_after_id = None  # Scheduled AQI update
+        
         # Create UI elements
         self.create_widgets()
         
@@ -174,7 +180,16 @@ class WeatherDisplay:
         self.canvas.bind('<Configure>', self.on_resize)
     
     def on_resize(self, event=None):
-        """Handle window resize to reposition widgets"""
+        """Handle window resize to reposition widgets (debounced for performance)"""
+        # Cancel any pending resize callback
+        if self._resize_after_id:
+            self.root.after_cancel(self._resize_after_id)
+        # Debounce: wait 150ms after last resize event before redrawing
+        self._resize_after_id = self.root.after(150, self._do_resize)
+    
+    def _do_resize(self):
+        """Actually perform the resize operations"""
+        self._resize_after_id = None
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
         
@@ -210,8 +225,15 @@ class WeatherDisplay:
         if self.debug_enabled:
             self.canvas.coords('test_button', width - 10, 10)
     
+    def _get_cached_font(self, family, size, weight='normal'):
+        """Get a cached Font object to avoid repeated creation (expensive on Pi Zero)"""
+        key = (family, size, weight)
+        if key not in self._font_cache:
+            self._font_cache[key] = font.Font(family=family, size=size, weight=weight)
+        return self._font_cache[key]
+    
     def auto_fit_text(self, tag, max_width):
-        """Shrink font size until text fits within max_width"""
+        """Shrink font size until text fits within max_width (optimized with font cache)"""
         item = self.canvas.find_withtag(tag)
         if not item:
             return
@@ -222,12 +244,13 @@ class WeatherDisplay:
             return
         
         # Start with the base font size and reduce until it fits
+        # Use larger step size (4 instead of 2) for faster iteration on Pi Zero
         base_size = 78
         min_size = 24
         font_family = 'Helvetica'
         
-        for size in range(base_size, min_size - 1, -2):
-            f = font.Font(family=font_family, size=size, weight='bold')
+        for size in range(base_size, min_size - 1, -4):
+            f = self._get_cached_font(font_family, size, 'bold')
             text_width = f.measure(text)
             if text_width <= max_width:
                 self.canvas.itemconfig(tag, font=(font_family, size, 'bold'))
@@ -247,8 +270,8 @@ class WeatherDisplay:
         # Delete old gradient
         self.canvas.delete('gradient')
         
-        # Simplified gradient with rectangles
-        steps = 100
+        # Simplified gradient with rectangles (reduced steps for Pi Zero performance)
+        steps = 20
         r1, g1, b1 = self.gradient_start
         r2, g2, b2 = self.gradient_end
         
@@ -505,10 +528,11 @@ class WeatherDisplay:
             if resp.status_code == 200 and resp.headers.get('Content-Type', '').lower().startswith('image/'):
                 img = Image.open(BytesIO(resp.content))
                 # Limit width to 160px, keep aspect ratio
+                # Use BILINEAR instead of LANCZOS for better performance on Pi Zero
                 max_w = 160
                 if img.width > max_w:
                     new_h = int(img.height * (max_w / img.width))
-                    img = img.resize((max_w, new_h), Image.LANCZOS)
+                    img = img.resize((max_w, new_h), Image.BILINEAR)
 
                 self.airly_logo_photo = ImageTk.PhotoImage(img)
                 # Assign to canvas image item
@@ -613,61 +637,56 @@ class WeatherDisplay:
         self.canvas.itemconfig('datetime', text=formatted)
         self.update_background()
     
-    def update_loop(self):
-        """Background thread for periodic updates"""
-        while True:
-            try:
-                self.fetch_weather()
-            except Exception as e:
-                print(f"Error in weather update: {e}")
-            time.sleep(REFRESH_INTERVAL)
+    def schedule_weather_update(self):
+        """Schedule weather updates using Tkinter's after() (more efficient than threads)"""
+        try:
+            self.fetch_weather()
+        except Exception as e:
+            print(f"Error in weather update: {e}")
+        # Schedule next update
+        self._weather_after_id = self.root.after(REFRESH_INTERVAL * 1000, self.schedule_weather_update)
     
-    def time_update_loop(self):
-        """Background thread for time updates"""
-        while True:
-            try:
-                self.update_datetime()
-            except Exception as e:
-                print(f"Error in time update: {e}")
-            time.sleep(TIME_UPDATE_INTERVAL)
+    def schedule_time_update(self):
+        """Schedule time updates using Tkinter's after() (more efficient than threads)"""
+        try:
+            self.update_datetime()
+        except Exception as e:
+            print(f"Error in time update: {e}")
+        # Schedule next update
+        self._time_after_id = self.root.after(TIME_UPDATE_INTERVAL * 1000, self.schedule_time_update)
     
-    def air_quality_loop(self):
-        """Background thread for air quality updates - only at 6am, 3pm, and 8pm"""
+    def schedule_aqi_update(self):
+        """Schedule air quality updates using Tkinter's after() - only at 6am, 3pm, and 8pm"""
         scheduled_hours = [6, 15, 20]
+        now = datetime.now()
+        current_hour = now.hour
         
-        while True:
-            now = datetime.now()
-            current_hour = now.hour
-            
-            # Check if we're at a scheduled hour and haven't fetched yet this hour
-            if current_hour in scheduled_hours and self.last_aqi_fetch_hour != current_hour:
-                try:
-                    print(f"[AQI] Scheduled fetch at {now.strftime('%H:%M')}")
-                    self.fetch_air_quality()
-                    self.last_aqi_fetch_hour = current_hour
-                except Exception as e:
-                    print(f"Error in air quality update: {e}")
-            
-            # Sleep for 1 minute before checking again
-            time.sleep(60)
+        # Check if we're at a scheduled hour and haven't fetched yet this hour
+        if current_hour in scheduled_hours and self.last_aqi_fetch_hour != current_hour:
+            try:
+                print(f"[AQI] Scheduled fetch at {now.strftime('%H:%M')}")
+                self.fetch_air_quality()
+                self.last_aqi_fetch_hour = current_hour
+            except Exception as e:
+                print(f"Error in air quality update: {e}")
+        
+        # Check again in 1 minute
+        self._aqi_after_id = self.root.after(60 * 1000, self.schedule_aqi_update)
     
     def start_updates(self):
-        """Start all update threads"""
+        """Start all update schedules using Tkinter's after() (more efficient than threads on Pi Zero)"""
         # Initial data fetch
         self.get_coordinates_from_city()
         self.fetch_weather()
         self.fetch_air_quality()
         self.update_datetime()
         
-        # Start background threads
-        weather_thread = threading.Thread(target=self.update_loop, daemon=True)
-        weather_thread.start()
-        
-        air_quality_thread = threading.Thread(target=self.air_quality_loop, daemon=True)
-        air_quality_thread.start()
-        
-        time_thread = threading.Thread(target=self.time_update_loop, daemon=True)
-        time_thread.start()
+        # Schedule periodic updates using after() instead of threads
+        # This is more efficient on weak hardware as it avoids thread overhead
+        # and doesn't require thread-safe UI updates
+        self._weather_after_id = self.root.after(REFRESH_INTERVAL * 1000, self.schedule_weather_update)
+        self._aqi_after_id = self.root.after(60 * 1000, self.schedule_aqi_update)
+        self._time_after_id = self.root.after(TIME_UPDATE_INTERVAL * 1000, self.schedule_time_update)
 
 
 def main():
