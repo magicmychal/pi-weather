@@ -10,10 +10,28 @@ import requests
 from datetime import datetime
 import threading
 import time
+import os
+from dotenv import load_dotenv
+from PIL import Image, ImageTk
+from io import BytesIO
+from urllib.request import urlopen
 
 # Configuration
 REFRESH_INTERVAL = 600  # Refresh weather every 10 minutes (in seconds)
 TIME_UPDATE_INTERVAL = 60  # Update time every minute (in seconds)
+
+# Load environment variables
+load_dotenv()
+AIRLY_API_KEY = os.getenv('AIRLY_API_KEY')
+AIRLY_LATITUDE = os.getenv('AIRLY_LATITUDE')
+AIRLY_LONGITUDE = os.getenv('AIRLY_LONGITUDE')
+AIRLY_MAX_DISTANCE_KM = os.getenv('AIRLY_MAX_DISTANCE_KM', '5')
+DEBUG_ENV = os.getenv('DEBUG', 'false')
+
+def parse_bool(value):
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+DEBUG = parse_bool(DEBUG_ENV)
 
 # Set your location here
 LOCATION = {
@@ -76,6 +94,11 @@ class WeatherDisplay:
         self.gradient_end = (118, 75, 162)
         self.phase_override = None
         self.animating = False
+        self.air_quality = None
+        self.airly_logo = None
+        self.airly_logo_photo = None
+        self.last_aqi_fetch_hour = None
+        self.debug_enabled = DEBUG
         
         # Create UI elements
         self.create_widgets()
@@ -112,7 +135,7 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="--",
-            font=('Segoe UI', 36, 'normal'),
+            font=('Segoe UI', 28, 'normal'),
             fill='white',
             anchor='n',
             tags=('description',)
@@ -134,17 +157,37 @@ class WeatherDisplay:
             fill='white',
             width=2,
             capstyle=tk.ROUND,
-            tags=('separator',)
+            tags=('divider',)
         )
 
-        # Gradient demo button (top-right corner)
-        self.test_button = tk.Button(self.root, text="Gradient Demo", command=self.start_gradient_demo)
-        self.canvas.create_window(
+        # Air quality text (below description)
+        self.canvas.create_text(
             0, 0,
-            window=self.test_button,
-            anchor='ne',
-            tags=('test_button',)
+            text="Air quality: --",
+            font=('Segoe UI', 28, 'normal'),
+            fill='white',
+            anchor='n',
+            tags=('air_quality',)
         )
+
+        # Airly logo (bottom right corner)
+        self.airly_logo = self.canvas.create_image(
+            0, 0,
+            anchor='se',
+            tags=('airly_logo',)
+        )
+
+        # Gradient demo button (top-right corner, only in debug mode)
+        if self.debug_enabled:
+            self.test_button = tk.Button(self.root, text="Gradient Demo", command=self.start_gradient_demo)
+            self.canvas.create_window(
+                0, 0,
+                window=self.test_button,
+                anchor='ne',
+                tags=('test_button',)
+            )
+        else:
+            self.test_button = None
 
         # Bind resize event
         self.canvas.bind('<Configure>', self.on_resize)
@@ -157,30 +200,32 @@ class WeatherDisplay:
         # Redraw gradient
         self.draw_gradient()
         
-        # Position widgets
-        self.canvas.coords('location', width // 2, height * 0.15)
-        # Place temperature and time side by side at center
-        center_x = width // 2
-        middle_y = int(height * 0.45)
-        # Place text with extra gap from separator
-        self.canvas.coords('temperature', center_x - 40, middle_y)
-        self.canvas.coords('datetime', center_x + 40, middle_y)
-
-        # Position separator based on text bounding boxes
-        bbox_temp = self.canvas.bbox('temperature')
-        bbox_time = self.canvas.bbox('datetime')
-        if bbox_temp and bbox_time:
-            height_temp = bbox_temp[3] - bbox_temp[1]
-            height_time = bbox_time[3] - bbox_time[1]
-            sep_height = max(height_temp, height_time)
-            y1 = middle_y - sep_height // 2
-            y2 = middle_y + sep_height // 2
-            self.canvas.coords('separator', center_x, y1, center_x, y2)
-        else:
-            # Fallback if bbox not ready
-            self.canvas.coords('separator', center_x, middle_y - 60, center_x, middle_y + 60)
-        self.canvas.coords('description', width // 2, height * 0.60)
-        self.canvas.coords('test_button', width - 10, 10)
+        # Position location at top center
+        self.canvas.coords('location', width // 2, height * 0.12)
+        
+        # Left side: Clock (time)
+        clock_x = width // 4
+        clock_y = height * 0.45
+        self.canvas.coords('datetime', clock_x, clock_y)
+        
+        # Divider line in the middle
+        divider_x = width // 2
+        self.canvas.coords('divider', divider_x, height * 0.20, divider_x, height * 0.80)
+        
+        # Right side: Temperature, weather, and air quality (centered on right half)
+        right_center_x = width * 0.75
+        temp_y = height * 0.38
+        description_y = height * 0.50
+        air_quality_y = height * 0.60
+        
+        self.canvas.coords('temperature', right_center_x, temp_y)
+        self.canvas.coords('description', right_center_x, description_y)
+        self.canvas.coords('air_quality', right_center_x, air_quality_y)
+        
+        # Position logo and button
+        self.canvas.coords('airly_logo', width - 20, height - 20)
+        if self.debug_enabled:
+            self.canvas.coords('test_button', width - 10, 10)
     
     def draw_gradient(self):
         """Draw gradient background"""
@@ -216,6 +261,17 @@ class WeatherDisplay:
         
         # Lower gradient to back
         self.canvas.tag_lower('gradient')
+        
+        # Raise all UI elements above gradient
+        self.canvas.tag_raise('airly_logo')
+        self.canvas.tag_raise('air_quality')
+        self.canvas.tag_raise('description')
+        self.canvas.tag_raise('divider')
+        self.canvas.tag_raise('temperature')
+        self.canvas.tag_raise('datetime')
+        self.canvas.tag_raise('location')
+        if self.debug_enabled:
+            self.canvas.tag_raise('test_button')
 
     def get_time_phase(self):
         if self.phase_override:
@@ -322,6 +378,160 @@ class WeatherDisplay:
 
         run_stage(0)
     
+    def fetch_air_quality(self):
+        """Fetch air quality data from Airly API"""
+        print(f"[AQI] Fetching air quality data from Airly...")
+        print(f"[AQI] AIRLY_API_KEY: {'***' if AIRLY_API_KEY else 'NOT SET'}")
+        print(f"[AQI] Location: {AIRLY_LATITUDE}, {AIRLY_LONGITUDE}")
+        
+        if not AIRLY_API_KEY or not AIRLY_LATITUDE or not AIRLY_LONGITUDE:
+            print("[AQI] Warning: AIRLY_API_KEY, AIRLY_LATITUDE, or AIRLY_LONGITUDE not configured in .env")
+            return
+
+        try:
+            # Step 1: Get nearest installations
+            url_installations = f"https://airapi.airly.eu/v2/installations/nearest?lat={AIRLY_LATITUDE}&lng={AIRLY_LONGITUDE}&maxDistanceKM={AIRLY_MAX_DISTANCE_KM}&maxResults=3"
+            headers = {"apikey": AIRLY_API_KEY}
+            print(f"[AQI] Step 1: Fetching nearest installations...")
+            print(f"[AQI] URL: {url_installations}")
+            
+            response = requests.get(url_installations, headers=headers, timeout=10)
+            print(f"[AQI] Response status: {response.status_code}")
+            
+            installations = response.json()
+            print(f"[AQI] Found {len(installations)} installations")
+            
+            if not installations or len(installations) == 0:
+                raise Exception('No installations found')
+            
+            # Get the closest installation
+            closest_installation = installations[0]
+            installation_id = closest_installation.get('id')
+            print(f"[AQI] Using installation ID: {installation_id}")
+            print(f"[AQI] Address: {closest_installation.get('address', {}).get('displayAddress1', 'Unknown')}")
+            
+            # Step 2: Get measurements for the closest installation
+            url_measurements = f"https://airapi.airly.eu/v2/measurements/installation?installationId={installation_id}&includeWildcards=true"
+            print(f"[AQI] Step 2: Fetching measurements for installation {installation_id}...")
+            
+            response = requests.get(url_measurements, headers=headers, timeout=10)
+            print(f"[AQI] Response status: {response.status_code}")
+            
+            data = response.json()
+            print(f"[AQI] Response data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+
+            if data.get('current'):
+                current = data['current']
+                indexes = current.get('indexes', [])
+                values = current.get('values', [])
+                
+                print(f"[AQI] Indexes found: {len(indexes)}")
+                print(f"[AQI] Values found: {len(values)}")
+                
+                # Extract AIRLY_CAQI or PM2.5
+                air_quality_text = "--"
+                for index in indexes:
+                    if index.get('name') == 'AIRLY_CAQI':
+                        caqi_value = round(index.get('value', 0))
+                        status = self.caqi_to_status(caqi_value)
+                        air_quality_text = f"Air quality: {status}"
+                        print(f"[AQI] Found CAQI index: {caqi_value} -> {status}")
+                        break
+                
+                # Fallback to PM2.5 if CAQI not found
+                if air_quality_text == "--":
+                    for value in values:
+                        if value.get('name') == 'PM25':
+                            pm25_value = round(value.get('value', 0), 1)
+                            # Rough PM2.5 to CAQI conversion (PM2.5: 0-12 good, 12-35 moderate, etc.)
+                            if pm25_value <= 12:
+                                status = "A-MAZE-BALLS"
+                            elif pm25_value <= 35:
+                                status = "Open the windows, go out!"
+                            elif pm25_value <= 55:
+                                status = "It's ok..."
+                            elif pm25_value <= 150:
+                                status = "Bad, but will survive"
+                            else:
+                                status = "Hazardous, do not open the windows"
+                            air_quality_text = f"Air quality: {status}"
+                            print(f"[AQI] Found PM2.5: {pm25_value} -> {status}")
+                            break
+                
+                print(f"[AQI] Setting air quality text: {air_quality_text}")
+                self.air_quality = air_quality_text
+                self.canvas.itemconfig('air_quality', text=air_quality_text)
+                print(f"[AQI] Air quality updated successfully")
+                
+                # Load Airly logo
+                self.load_airly_logo()
+            else:
+                raise Exception('Air quality data not found in response')
+        except Exception as e:
+            print(f"[AQI] Error fetching air quality: {e}")
+            import traceback
+            traceback.print_exc()
+            self.canvas.itemconfig('air_quality', text="AQI: Error")
+    
+    def caqi_to_status(self, caqi_value):
+        """Convert CAQI value to verbal air quality status"""
+        caqi = float(caqi_value)
+        if caqi <= 33:
+            return "A-MAZE-BALLS"
+        elif caqi <= 66:
+            return "Open the windows, go out!"
+        elif caqi <= 99:
+            return "It's ok..."
+        elif caqi <= 150:
+            return "Bad, but will survive"
+        else:
+            return "Hazardous, do not open the windows"
+    
+    def load_airly_logo(self):
+        """Load and display Airly logo from CDN"""
+        try:
+            print("[Logo] Loading Airly logo...")
+            # Direct PNG URL provided by user
+            png_url = "https://cdn.airly.org/assets/brand/logo/primary/airly-1024.png"
+
+            resp = requests.get(png_url, timeout=8)
+            if resp.status_code == 200 and resp.headers.get('Content-Type', '').lower().startswith('image/'):
+                img = Image.open(BytesIO(resp.content))
+                # Limit width to 160px, keep aspect ratio
+                max_w = 160
+                if img.width > max_w:
+                    new_h = int(img.height * (max_w / img.width))
+                    img = img.resize((max_w, new_h), Image.LANCZOS)
+
+                self.airly_logo_photo = ImageTk.PhotoImage(img)
+                # Assign to canvas image item
+                self.canvas.itemconfig('airly_logo', image=self.airly_logo_photo)
+                # Ensure on top and position at bottom-right
+                w = self.canvas.winfo_width()
+                h = self.canvas.winfo_height()
+                self.canvas.coords('airly_logo', w - 20, h - 20)
+                self.canvas.tag_raise('airly_logo')
+                print("[Logo] Airly logo set successfully")
+            else:
+                raise Exception(f"PNG not available (status {resp.status_code}, content-type {resp.headers.get('Content-Type')})")
+        except Exception as e:
+            print(f"[Logo] Error loading Airly logo: {e}")
+            # Fallback to text logo placeholder
+            if not self.canvas.find_withtag('airly_logo_text'):
+                self.canvas.create_text(
+                    0, 0,
+                    text="Airly",
+                    font=('Segoe UI', 20, 'bold'),
+                    fill='white',
+                    anchor='se',
+                    tags=('airly_logo_text',)
+                )
+            # Position placeholder at bottom-right
+            w = self.canvas.winfo_width()
+            h = self.canvas.winfo_height()
+            self.canvas.coords('airly_logo_text', w - 20, h - 20)
+            self.canvas.tag_raise('airly_logo_text')
+    
     def get_coordinates_from_city(self):
         """Get coordinates from city name using geocoding"""
         try:
@@ -414,16 +624,40 @@ class WeatherDisplay:
                 print(f"Error in time update: {e}")
             time.sleep(TIME_UPDATE_INTERVAL)
     
+    def air_quality_loop(self):
+        """Background thread for air quality updates - only at 6am, 3pm, and 8pm"""
+        scheduled_hours = [6, 15, 20]
+        
+        while True:
+            now = datetime.now()
+            current_hour = now.hour
+            
+            # Check if we're at a scheduled hour and haven't fetched yet this hour
+            if current_hour in scheduled_hours and self.last_aqi_fetch_hour != current_hour:
+                try:
+                    print(f"[AQI] Scheduled fetch at {now.strftime('%H:%M')}")
+                    self.fetch_air_quality()
+                    self.last_aqi_fetch_hour = current_hour
+                except Exception as e:
+                    print(f"Error in air quality update: {e}")
+            
+            # Sleep for 1 minute before checking again
+            time.sleep(60)
+    
     def start_updates(self):
         """Start all update threads"""
         # Initial data fetch
         self.get_coordinates_from_city()
         self.fetch_weather()
+        self.fetch_air_quality()
         self.update_datetime()
         
         # Start background threads
         weather_thread = threading.Thread(target=self.update_loop, daemon=True)
         weather_thread.start()
+        
+        air_quality_thread = threading.Thread(target=self.air_quality_loop, daemon=True)
+        air_quality_thread.start()
         
         time_thread = threading.Thread(target=self.time_update_loop, daemon=True)
         time_thread.start()
