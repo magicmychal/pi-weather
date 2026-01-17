@@ -7,98 +7,227 @@ export struct GradientColor {
 }
 
 export component WeatherDisplay inherits Window {
-    // Properties
+    // Time and weather properties
     in-out property <string> time-text: "--:--";
     in-out property <string> temperature-text: "--°";
+    in-out property <string> condition-text: "--";
+    in-out property <image> condition-icon;
     in-out property <string> air-quality-text: "--";
+    in-out property <int> aqi-value: 0;
+    // Global font family (fallbacks handled in Rust)
+    in-out property <string> font-family-name: "monospace";
+    
+    // Legacy gradient properties (kept for compatibility)
     in-out property <GradientColor> gradient-start: { r: 102, g: 126, b: 234 };
     in-out property <GradientColor> gradient-end: { r: 118, g: 75, b: 162 };
     
-    // Computed gradient colors
     property <color> color-start: rgb(gradient-start.r, gradient-start.g, gradient-start.b);
     property <color> color-end: rgb(gradient-end.r, gradient-end.g, gradient-end.b);
     
     title: "Weather Display";
-    background: @linear-gradient(180deg, color-start 0%, color-end 100%);
+    width: 960px;
+    height: 640px;
+    background: #555555;
     
-    // Main layout
+    // Main layout: left clock, right weather
     HorizontalBox {
         padding: 0px;
         spacing: 0px;
         
-        // Left panel - Clock
+        // LEFT PANEL - ANALOG CLOCK
         clock-panel := Rectangle {
+            background: #666666;
             horizontal-stretch: 1;
             
             VerticalBox {
                 alignment: center;
-                
-                Text {
-                    text: time-text;
-                    color: #FFFFFF;
-                    font-size: 120px;
-                    font-weight: 300;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                padding: 20px;
+                spacing: 20px;
+                // Digital time display (monospace)
+                Rectangle {
+                    width: 420px;
+                    height: 160px;
+                    background: #222222;
+                    
+                    Text {
+                        text: time-text;
+                        color: #00FF00;
+                        font-size: 120px;
+                        font-family: font-family-name;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
         
-        // Divider
+        // Vertical divider
         Rectangle {
             width: 2px;
-            background: #FFFFFF;
-            opacity: 0.8;
+            background: #333333;
             vertical-stretch: 1;
         }
         
-        // Right panel - Weather info
+        // RIGHT PANEL - WEATHER INFORMATION
         weather-panel := Rectangle {
+            background: #666666;
             horizontal-stretch: 1;
             
             VerticalBox {
-                alignment: center;
-                spacing: 40px;
-                padding-left: 40px;
-                padding-right: 40px;
+                padding: 20px;
+                spacing: 15px;
+                alignment: start;
                 
-                // Temperature
-                Text {
-                    text: temperature-text;
-                    color: #FFFFFF;
-                    font-size: 78px;
-                    font-weight: 200;
-                    horizontal-alignment: left;
+                // Temperature panel
+                Rectangle {
+                    height: 140px;
+                    background: #555555;
+                    
+                    VerticalBox {
+                        padding: 15px;
+                        spacing: 8px;
+                        
+                        Text {
+                            text: "=== TEMPERATURE ===";
+                            color: #00FFFF;
+                            font-size: 16px;
+                            font-family: font-family-name;
+                            font-weight: 400;
+                        }
+                        
+                        Text {
+                            text: temperature-text;
+                            color: #00FF00;
+                            font-size: 80px;
+                            font-family: font-family-name;
+                            font-weight: 700;
+                        }
+                    }
                 }
                 
-                // Air quality
-                air-quality-label := Text {
-                    text: air-quality-text;
-                    color: #FFFFFF;
-                    font-size: 48px;
-                    font-weight: 400;
-                    horizontal-alignment: left;
-                    wrap: word-wrap;
+                // Condition panel
+                Rectangle {
+                    height: 120px;
+                    background: #555555;
+                    
+                    VerticalBox {
+                        padding: 15px;
+                        spacing: 8px;
+                        
+                        Text {
+                            text: "=== CONDITION ===";
+                            color: #00FFFF;
+                            font-size: 16px;
+                            font-family: font-family-name;
+                            font-weight: 400;
+                        }
+                        
+                        HorizontalBox {
+                            spacing: 12px;
+                            
+                            Image {
+                                source: condition-icon;
+                                width: 56px;
+                                height: 56px;
+                            }
+                            
+                            Text {
+                                text: condition-text;
+                                color: #FFBF00;
+                                font-size: 40px;
+                                font-family: font-family-name;
+                                font-weight: 400;
+                                horizontal-alignment: left;
+                            }
+                        }
+                    }
+                }
+                
+                // Air Quality panel
+                Rectangle {
+                    height: 180px;
+                    background: #555555;
+                    
+                    VerticalBox {
+                        padding: 15px;
+                        spacing: 8px;
+                        
+                        Text {
+                            text: "=== AIR QUALITY ===";
+                            color: #00FFFF;
+                            font-size: 16px;
+                            font-family: font-family-name;
+                            font-weight: 400;
+                        }
+                        
+                        Text {
+                            text: air-quality-text;
+                            color: aqi-value <= 50 ? #00FF00 : 
+                                   aqi-value <= 100 ? #FFFF00 :
+                                   aqi-value <= 150 ? #FF9900 : #FF0000;
+                            font-size: 35px;
+                            font-family: font-family-name;
+                            font-weight: 700;
+                        }
+                        
+                        // AQI bar
+                        Rectangle {
+                            height: 20px;
+                            background: #333333;
+                            
+                            Rectangle {
+                                width: parent.width * Math.min(aqi-value / 200.0, 1.0);
+                                height: 100%;
+                                background: aqi-value <= 50 ? #00FF00 : 
+                                           aqi-value <= 100 ? #FFFF00 :
+                                           aqi-value <= 150 ? #FF9900 : #FF0000;
+                            }
+                        }
+                        
+                        Text {
+                            text: "AQI: " + aqi-value;
+                            color: #00FFFF;
+                            font-size: 14px;
+                            font-family: font-family-name;
+                            font-weight: 400;
+                        }
+                    }
                 }
             }
         }
     }
     
-    // Airly logo (bottom-right corner)
+    // Status bar at bottom
     Rectangle {
-        x: parent.width - self.width - 20px;
-        y: parent.height - self.height - 20px;
-        width: 120px;
+        y: parent.height - 40px;
+        width: parent.width;
         height: 40px;
+        background: #222222;
         
-        Text {
-            text: "Airly";
-            color: #FFFFFF;
-            font-size: 18px;
-            font-weight: 600;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            opacity: 0.9;
+        HorizontalBox {
+            padding: 10px;
+            
+            Text {
+                text: "SYSTEM READY";
+                color: #00FF00;
+                font-size: 14px;
+                font-family: font-family-name;
+                font-weight: 400;
+            }
+            
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            
+            Text {
+                text: "Airly Data";
+                color: #00FFFF;
+                font-size: 14px;
+                font-family: font-family-name;
+                font-weight: 400;
+                horizontal-alignment: right;
+            }
         }
     }
 }
