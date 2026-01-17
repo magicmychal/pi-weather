@@ -1,3 +1,12 @@
+# Rust/Cargo
+/target/
+Cargo.lock
+**/*.rs.bk
+
+# Slint
+.slint
+slint_cache/
+
 # Environment variables
 .env
 .env.local
@@ -10,7 +19,7 @@ ENV/
 env/
 .virtualenv
 
-# Python
+# Python (legacy)
 __pycache__/
 *.py[cod]
 *$py.class

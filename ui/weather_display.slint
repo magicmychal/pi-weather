@@ -1,0 +1,104 @@
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export struct GradientColor {
+    r: int,
+    g: int,
+    b: int,
+}
+
+export component WeatherDisplay inherits Window {
+    // Properties
+    in-out property <string> time-text: "--:--";
+    in-out property <string> temperature-text: "--°";
+    in-out property <string> air-quality-text: "--";
+    in-out property <GradientColor> gradient-start: { r: 102, g: 126, b: 234 };
+    in-out property <GradientColor> gradient-end: { r: 118, g: 75, b: 162 };
+    
+    // Computed gradient colors
+    property <color> color-start: rgb(gradient-start.r, gradient-start.g, gradient-start.b);
+    property <color> color-end: rgb(gradient-end.r, gradient-end.g, gradient-end.b);
+    
+    title: "Weather Display";
+    background: @linear-gradient(180deg, color-start 0%, color-end 100%);
+    
+    // Main layout
+    HorizontalBox {
+        padding: 0px;
+        spacing: 0px;
+        
+        // Left panel - Clock
+        clock-panel := Rectangle {
+            horizontal-stretch: 1;
+            
+            VerticalBox {
+                alignment: center;
+                
+                Text {
+                    text: time-text;
+                    color: #FFFFFF;
+                    font-size: 120px;
+                    font-weight: 300;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        
+        // Divider
+        Rectangle {
+            width: 2px;
+            background: #FFFFFF;
+            opacity: 0.8;
+            vertical-stretch: 1;
+        }
+        
+        // Right panel - Weather info
+        weather-panel := Rectangle {
+            horizontal-stretch: 1;
+            
+            VerticalBox {
+                alignment: center;
+                spacing: 40px;
+                padding-left: 40px;
+                padding-right: 40px;
+                
+                // Temperature
+                Text {
+                    text: temperature-text;
+                    color: #FFFFFF;
+                    font-size: 78px;
+                    font-weight: 200;
+                    horizontal-alignment: left;
+                }
+                
+                // Air quality
+                air-quality-label := Text {
+                    text: air-quality-text;
+                    color: #FFFFFF;
+                    font-size: 48px;
+                    font-weight: 400;
+                    horizontal-alignment: left;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+    
+    // Airly logo (bottom-right corner)
+    Rectangle {
+        x: parent.width - self.width - 20px;
+        y: parent.height - self.height - 20px;
+        width: 120px;
+        height: 40px;
+        
+        Text {
+            text: "Airly";
+            color: #FFFFFF;
+            font-size: 18px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            opacity: 0.9;
+        }
+    }
+}
