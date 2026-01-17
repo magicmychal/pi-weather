@@ -111,15 +111,6 @@ class WeatherDisplay:
     
     def create_widgets(self):
         """Create all UI widgets as canvas text items (no background boxes)"""
-        # Location text
-        self.canvas.create_text(
-            0, 0,
-            text="Loading location...",
-            font=('Segoe UI', 30, 'normal'),
-            fill='white',
-            anchor='n',
-            tags=('location',)
-        )
 
         # Temperature text
         self.canvas.create_text(
@@ -129,16 +120,6 @@ class WeatherDisplay:
             fill='white',
             anchor='w',
             tags=('temperature',)
-        )
-
-        # Weather description text
-        self.canvas.create_text(
-            0, 0,
-            text="--",
-            font=('Segoe UI', 18, 'normal'),
-            fill='white',
-            anchor='w',
-            tags=('description',)
         )
 
         # Date/Time text (24h format, right-aligned toward divider)
@@ -151,7 +132,7 @@ class WeatherDisplay:
             tags=('datetime',)
         )
 
-        # Vertical separator line between temperature and time
+        # Vertical separator line between clock and weather
         self.canvas.create_line(
             0, 0, 0, 0,
             fill='white',
@@ -160,11 +141,11 @@ class WeatherDisplay:
             tags=('divider',)
         )
 
-        # Air quality text (below description)
+        # Air quality text (same size as temperature, with auto-fit)
         self.canvas.create_text(
             0, 0,
-            text="Air quality: --",
-            font=('Segoe UI', 18, 'normal'),
+            text="--",
+            font=('Segoe UI', 78),
             fill='white',
             anchor='w',
             tags=('air_quality',)
@@ -200,35 +181,60 @@ class WeatherDisplay:
         # Redraw gradient
         self.draw_gradient()
         
-        # Position location at top center
-        self.canvas.coords('location', width // 2, height * 0.09)
-        
         # Divider line in the middle
         divider_x = width // 2
         gap = int(width * 0.02)  # small gap between content and divider
 
         # Left panel: Clock (time), right-aligned toward divider
         clock_x = divider_x - gap
-        clock_y = height * 0.40
+        clock_y = height * 0.45
         self.canvas.coords('datetime', clock_x, clock_y)
         
         # Divider line
-        self.canvas.coords('divider', divider_x, height * 0.17, divider_x, height * 0.77)
+        self.canvas.coords('divider', divider_x, height * 0.20, divider_x, height * 0.80)
         
-        # Right panel: Temperature, weather, and air quality (left-aligned away from divider)
+        # Right panel: Temperature and air quality (left-aligned away from divider)
         right_x = divider_x + gap
-        temp_y = height * 0.34
-        description_y = height * 0.46
-        air_quality_y = height * 0.56
+        right_max_width = width - right_x - 20  # available width for right panel
+        temp_y = height * 0.35
+        air_quality_y = height * 0.55
         
         self.canvas.coords('temperature', right_x, temp_y)
-        self.canvas.coords('description', right_x, description_y)
         self.canvas.coords('air_quality', right_x, air_quality_y)
+        
+        # Auto-fit air quality text if too wide
+        self.auto_fit_text('air_quality', right_max_width)
         
         # Position logo and button
         self.canvas.coords('airly_logo', width - 20, height - 20)
         if self.debug_enabled:
             self.canvas.coords('test_button', width - 10, 10)
+    
+    def auto_fit_text(self, tag, max_width):
+        """Shrink font size until text fits within max_width"""
+        item = self.canvas.find_withtag(tag)
+        if not item:
+            return
+        
+        # Get current text and font
+        text = self.canvas.itemcget(tag, 'text')
+        if not text:
+            return
+        
+        # Start with the base font size and reduce until it fits
+        base_size = 78
+        min_size = 24
+        font_family = 'Helvetica'
+        
+        for size in range(base_size, min_size - 1, -2):
+            f = font.Font(family=font_family, size=size, weight='bold')
+            text_width = f.measure(text)
+            if text_width <= max_width:
+                self.canvas.itemconfig(tag, font=(font_family, size, 'bold'))
+                return
+        
+        # If still too wide, use minimum size
+        self.canvas.itemconfig(tag, font=(font_family, min_size, 'bold'))
     
     def draw_gradient(self):
         """Draw gradient background"""
@@ -268,11 +274,9 @@ class WeatherDisplay:
         # Raise all UI elements above gradient
         self.canvas.tag_raise('airly_logo')
         self.canvas.tag_raise('air_quality')
-        self.canvas.tag_raise('description')
         self.canvas.tag_raise('divider')
         self.canvas.tag_raise('temperature')
         self.canvas.tag_raise('datetime')
-        self.canvas.tag_raise('location')
         if self.debug_enabled:
             self.canvas.tag_raise('test_button')
 
@@ -437,7 +441,7 @@ class WeatherDisplay:
                     if index.get('name') == 'AIRLY_CAQI':
                         caqi_value = round(index.get('value', 0))
                         status = self.caqi_to_status(caqi_value)
-                        air_quality_text = f"Air quality: {status}"
+                        air_quality_text = status
                         print(f"[AQI] Found CAQI index: {caqi_value} -> {status}")
                         break
                 
@@ -448,16 +452,16 @@ class WeatherDisplay:
                             pm25_value = round(value.get('value', 0), 1)
                             # Rough PM2.5 to CAQI conversion (PM2.5: 0-12 good, 12-35 moderate, etc.)
                             if pm25_value <= 12:
-                                status = "A-MAZE-BALLS"
+                                status = "Take a deep breath!"
                             elif pm25_value <= 35:
-                                status = "Open the windows, go out!"
+                                status = "Air is getting better."
                             elif pm25_value <= 55:
-                                status = "It's ok..."
+                                status = "It's ok... don't "
                             elif pm25_value <= 150:
-                                status = "Bad, but will survive"
+                                status = "Try to limit outdoor activities"
                             else:
-                                status = "Hazardous, do not open the windows"
-                            air_quality_text = f"Air quality: {status}"
+                                status = "Hazardous, do not go out!"
+                            air_quality_text = status
                             print(f"[AQI] Found PM2.5: {pm25_value} -> {status}")
                             break
                 
