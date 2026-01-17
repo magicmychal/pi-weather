@@ -115,7 +115,7 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="Loading location...",
-            font=('Segoe UI', 48, 'normal'),
+            font=('Segoe UI', 36, 'normal'),
             fill='white',
             anchor='n',
             tags=('location',)
@@ -125,7 +125,7 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="--°",
-            font=('Segoe UI', 120),
+            font=('Segoe UI', 90),
             fill='white',
             anchor='e',
             tags=('temperature',)
@@ -135,7 +135,7 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="--",
-            font=('Segoe UI', 28, 'normal'),
+            font=('Segoe UI', 22, 'normal'),
             fill='white',
             anchor='n',
             tags=('description',)
@@ -145,7 +145,7 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="--:--",
-            font=('Segoe UI', 120),
+            font=('Segoe UI', 90),
             fill='white',
             anchor='w',
             tags=('datetime',)
@@ -164,7 +164,7 @@ class WeatherDisplay:
         self.canvas.create_text(
             0, 0,
             text="Air quality: --",
-            font=('Segoe UI', 28, 'normal'),
+            font=('Segoe UI', 22, 'normal'),
             fill='white',
             anchor='n',
             tags=('air_quality',)
@@ -201,22 +201,22 @@ class WeatherDisplay:
         self.draw_gradient()
         
         # Position location at top center
-        self.canvas.coords('location', width // 2, height * 0.12)
+        self.canvas.coords('location', width // 2, height * 0.10)
         
         # Left side: Clock (time)
         clock_x = width // 4
-        clock_y = height * 0.45
+        clock_y = height * 0.42
         self.canvas.coords('datetime', clock_x, clock_y)
         
         # Divider line in the middle
         divider_x = width // 2
-        self.canvas.coords('divider', divider_x, height * 0.20, divider_x, height * 0.80)
+        self.canvas.coords('divider', divider_x, height * 0.18, divider_x, height * 0.78)
         
         # Right side: Temperature, weather, and air quality (centered on right half)
         right_center_x = width * 0.75
-        temp_y = height * 0.38
-        description_y = height * 0.50
-        air_quality_y = height * 0.60
+        temp_y = height * 0.36
+        description_y = height * 0.48
+        air_quality_y = height * 0.58
         
         self.canvas.coords('temperature', right_center_x, temp_y)
         self.canvas.coords('description', right_center_x, description_y)
@@ -521,7 +521,7 @@ class WeatherDisplay:
                 self.canvas.create_text(
                     0, 0,
                     text="Airly",
-                    font=('Segoe UI', 20, 'bold'),
+                        font=('Segoe UI', 18, 'bold'),
                     fill='white',
                     anchor='se',
                     tags=('airly_logo_text',)

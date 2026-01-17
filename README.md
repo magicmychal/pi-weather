@@ -42,13 +42,21 @@ sudo apt-get install -y python3-tk python3-requests unclutter
 - `python3-requests`: HTTP library for API calls
 - `unclutter`: Hides the mouse cursor after inactivity
 
-Install Python package dependencies (including Pillow and dotenv):
+#### 2. Create a Python Virtual Environment (recommended)
+
+From the project root, create and activate `.venv`, then install dependencies:
 
 ```bash
+cd /home/pi/pi-weather
+python3 -m venv .venv
+source .venv/bin/activate
+pip3 install --upgrade pip
 pip3 install -r requirements.txt
 ```
 
-#### 2. Clone or Copy the Project
+The startup scripts will automatically activate `.venv` if it exists.
+
+#### 3. Clone or Copy the Project
 
 Clone this repository or copy all project files to your Raspberry Pi:
 
@@ -60,13 +68,13 @@ cd pi-weather
 
 Or if you're copying files manually, ensure all files are in a single directory (e.g., `/home/pi/pi-weather/`).
 
-#### 3. Make the Startup Script Executable
+#### 4. Make the Startup Script Executable
 
 ```bash
 chmod +x start-native.sh
 ```
 
-#### 4. Configure Autostart
+#### 5. Configure Autostart
 
 Create an autostart entry to launch the kiosk on boot:
 
@@ -87,7 +95,7 @@ X-GNOME-Autostart-enabled=true
 
 Save and exit (Ctrl+X, then Y, then Enter).
 
-#### 5. Disable Screen Blanking (Optional but Recommended)
+#### 6. Disable Screen Blanking (Optional but Recommended)
 
 Edit the lightdm configuration:
 
@@ -104,7 +112,7 @@ xserver-command=X -s 0 -dpms
 
 Save and exit.
 
-#### 6. Configure Your Location
+#### 7. Configure Your Location
 
 Edit `weather_display.py` and change the location:
 
@@ -115,7 +123,7 @@ LOCATION = {
 }
 ```
 
-#### 7. Configure Environment Variables
+#### 8. Configure Environment Variables
 
 Copy the example file and fill in your values:
 
@@ -136,7 +144,7 @@ DEBUG=false
 - `DEBUG=true` shows the Gradient Demo button; `false` hides it.
 - Latitude/longitude are used to locate the nearest Airly installation.
 
-#### 8. Reboot
+#### 9. Reboot
 
 ```bash
 sudo reboot
@@ -151,6 +159,7 @@ To test without rebooting:
 **Python version:**
 ```bash
 cd /home/pi/pi-weather
+source .venv/bin/activate  # if created
 python3 weather_display.py
 ```
 Press `Escape` to exit fullscreen, `F11` to re-enter fullscreen.
@@ -158,6 +167,7 @@ Press `Escape` to exit fullscreen, `F11` to re-enter fullscreen.
 **Web version:**
 ```bash
 cd /home/pi/pi-weather
+source .venv/bin/activate  # if created
 ./start-kiosk.sh
 ```
 Press `Alt+F4` or `Ctrl+W` to exit.

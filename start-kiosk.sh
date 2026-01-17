@@ -17,6 +17,13 @@ unclutter -idle 0.1 &
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Activate virtual environment if present
+if [ -f "$SCRIPT_DIR/.venv/bin/activate" ]; then
+    . "$SCRIPT_DIR/.venv/bin/activate"
+else
+    echo "[start-kiosk] Warning: .venv not found at $SCRIPT_DIR/.venv. Running with system environment." >&2
+fi
+
 # Launch Chromium in kiosk mode with the index.html file
 chromium-browser \
     --kiosk \
