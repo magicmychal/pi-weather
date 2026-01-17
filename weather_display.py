@@ -198,19 +198,24 @@ class WeatherDisplay:
         
         # Divider line in the middle
         divider_x = width // 2
-        gap = int(width * 0.02)  # small gap between content and divider
+        margin = int(width * 0.03)  # margin from screen edges and divider
 
-        # Left panel: Clock (time), right-aligned toward divider
-        clock_x = divider_x - gap
+        # Left panel: Clock (time), centered in left half
+        clock_x = divider_x // 2  # center of left panel
         clock_y = height * 0.45
+        clock_max_width = divider_x - (margin * 2)  # available width for clock
         self.canvas.coords('datetime', clock_x, clock_y)
+        self.canvas.itemconfig('datetime', anchor='center')
+        
+        # Auto-fit clock to fill available space
+        self.auto_fit_text('datetime', clock_max_width, fill_space=True)
         
         # Divider line
         self.canvas.coords('divider', divider_x, height * 0.20, divider_x, height * 0.80)
         
         # Right panel: Temperature and air quality (left-aligned away from divider)
-        right_x = divider_x + gap
-        right_max_width = width - right_x - 20  # available width for right panel
+        right_x = divider_x + margin
+        right_max_width = width - right_x - margin  # available width for right panel
         temp_y = height * 0.35
         air_quality_y = height * 0.55
         
@@ -232,8 +237,14 @@ class WeatherDisplay:
             self._font_cache[key] = font.Font(family=family, size=size, weight=weight)
         return self._font_cache[key]
     
-    def auto_fit_text(self, tag, max_width):
-        """Shrink font size until text fits within max_width (optimized with font cache)"""
+    def auto_fit_text(self, tag, max_width, fill_space=False):
+        """Adjust font size to fit within max_width (optimized with font cache)
+        
+        Args:
+            tag: Canvas text item tag
+            max_width: Maximum width available
+            fill_space: If True, scale UP to fill space; if False, only shrink if needed
+        """
         item = self.canvas.find_withtag(tag)
         if not item:
             return
@@ -243,21 +254,21 @@ class WeatherDisplay:
         if not text:
             return
         
-        # Start with the base font size and reduce until it fits
-        # Use larger step size (4 instead of 2) for faster iteration on Pi Zero
-        base_size = 78
+        # Font size range - allow larger sizes when filling space
+        max_size = 200 if fill_space else 78
         min_size = 24
         font_family = 'Helvetica'
         
-        for size in range(base_size, min_size - 1, -4):
+        # Find the largest font size that fits
+        best_size = min_size
+        for size in range(max_size, min_size - 1, -4):
             f = self._get_cached_font(font_family, size, 'bold')
             text_width = f.measure(text)
             if text_width <= max_width:
-                self.canvas.itemconfig(tag, font=(font_family, size, 'bold'))
-                return
+                best_size = size
+                break
         
-        # If still too wide, use minimum size
-        self.canvas.itemconfig(tag, font=(font_family, min_size, 'bold'))
+        self.canvas.itemconfig(tag, font=(font_family, best_size, 'bold'))
     
     def draw_gradient(self):
         """Draw gradient background"""
