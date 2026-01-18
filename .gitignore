@@ -65,3 +65,7 @@ yarn.lock
 *.tmp
 *.bak
 *.backup
+
+# cargo
+Cargo.lock
+target/
