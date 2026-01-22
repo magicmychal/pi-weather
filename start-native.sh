@@ -4,8 +4,17 @@
 # This script launches the weather display in fullscreen mode
 # Also schedules a daily system restart at 3:00 AM
 
+# Setup logging
+LOG_FILE="/tmp/pi-weather.log"
+exec 1>>"$LOG_FILE"
+exec 2>>"$LOG_FILE"
+echo "[$(date)] Starting weather display..." 
+
 # Wait for network to be ready
 sleep 10
+
+# Set DISPLAY variable (critical for Tkinter on headless boot)
+export DISPLAY=:0
 
 # Disable screen blanking
 xset s off
@@ -49,16 +58,20 @@ schedule_daily_restart &
 # Activate virtual environment if present
 if [ -f "$PROJECT_DIR/.venv/bin/activate" ]; then
 	. "$PROJECT_DIR/.venv/bin/activate"
+	echo "[$(date)] Virtual environment activated" >&2
 else
-	echo "[start-native] Warning: .venv not found at $PROJECT_DIR/.venv. Running with system python." >&2
+	echo "[$(date)] Warning: .venv not found at $PROJECT_DIR/.venv. Running with system python." >&2
+fi
+
+# Verify python3 is available
+if ! command -v python3 &> /dev/null; then
+	echo "[$(date)] ERROR: python3 not found!" >&2
+	exit 1
 fi
 
 # Launch Python weather display
+echo "[$(date)] Launching weather display..." >&2
 python3 weather_display.py
 
-# If the app exits, wait and restart (optional)
-# Uncomment below to auto-restart on crash
-# while true; do
-#     python3 weather_display.py
-#     sleep 5
-# done
+# If app exits, log and optionally restart
+echo "[$(date)] Weather display exited with code $?" >&2

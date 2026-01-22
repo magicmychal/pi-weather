@@ -15,12 +15,34 @@ from PIL import Image, ImageTk
 from io import BytesIO
 from urllib.request import urlopen
 
+# Load environment variables FIRST (before using os.getenv)
+load_dotenv()
+
 # Configuration
 REFRESH_INTERVAL = 1800  # Refresh weather every 30 minutes (in seconds)
 TIME_UPDATE_INTERVAL = 59  # Update time every minute (in seconds)
+TRANSPORT_REFRESH_INTERVAL = 300  # Refresh transport every 5 minutes (in seconds)
 
-# Load environment variables
-load_dotenv()
+# Transport API configuration (VBB)
+TRANSPORT_API_BASE = "https://v6.vbb.transport.rest/stops"
+TRANSPORT_STATION_ID = os.getenv('TRANSPORT_STATION_ID', '900003201')  # Default: Berlin Hbf
+TRANSPORT_DURATION = 25  # Look ahead duration in minutes
+TRANSPORT_RESULTS = 6  # Number of departures to fetch (enough for ~3 per direction)
+
+def build_transport_url():
+    """Build VBB transport API URL for S-Bahn departures only"""
+    return (
+        f"{TRANSPORT_API_BASE}/{TRANSPORT_STATION_ID}/departures"
+        f"?duration={TRANSPORT_DURATION}"
+        f"&results={TRANSPORT_RESULTS}"
+        f"&suburban=true"
+        f"&subway=false"
+        f"&tram=false"
+        f"&bus=false"
+        f"&ferry=false"
+        f"&express=false"
+        f"&regional=false"
+    )
 AIRLY_API_KEY = os.getenv('AIRLY_API_KEY')
 AIRLY_LATITUDE = os.getenv('AIRLY_LATITUDE')
 AIRLY_LONGITUDE = os.getenv('AIRLY_LONGITUDE')
@@ -32,10 +54,10 @@ def parse_bool(value):
 
 DEBUG = parse_bool(DEBUG_ENV)
 
-# Set your location here
+# Location configuration (from .env)
 LOCATION = {
-    'city': 'Berlin',
-    'country': 'Germany'
+    'city': os.getenv('LOCATION_CITY', 'Berlin'),
+    'country': os.getenv('LOCATION_COUNTRY', 'Germany')
 }
 
 # Weather code mapping (Open-Meteo WMO codes)
@@ -93,11 +115,10 @@ class WeatherDisplay:
         self.gradient_end = (118, 75, 162)
         self.phase_override = None
         self.animating = False
-        self.air_quality = None
-        self.airly_logo = None
-        self.airly_logo_photo = None
         self.last_aqi_fetch_hour = None
         self.debug_enabled = DEBUG
+        self.aqi_canvas = None
+        self.current_caqi_value = 50  # Store current CAQI for re-applying after resize
         
         # Performance optimizations for Pi Zero
         self._font_cache = {}  # Cache Font objects to avoid repeated creation
@@ -105,6 +126,7 @@ class WeatherDisplay:
         self._weather_after_id = None  # Scheduled weather update
         self._time_after_id = None  # Scheduled time update
         self._aqi_after_id = None  # Scheduled AQI update
+        self._transport_after_id = None  # Scheduled transport update
         
         # Create UI elements
         self.create_widgets()
@@ -116,52 +138,126 @@ class WeatherDisplay:
         self.start_updates()
     
     def create_widgets(self):
-        """Create all UI widgets as canvas text items (no background boxes)"""
+        """Create all UI widgets for new 3-section layout"""
 
-        # Temperature text
-        self.canvas.create_text(
-            0, 0,
-            text="--°",
-            font=('Segoe UI', 78),
-            fill='white',
-            anchor='w',
-            tags=('temperature',)
-        )
-
-        # Date/Time text (24h format, right-aligned toward divider)
+        # === SECTION 1: HEADER ===
+        # Time (left-aligned, large)
         self.canvas.create_text(
             0, 0,
             text="--:--",
-            font=('Segoe UI', 78),
-            fill='white',
-            anchor='e',
+            font=('IBM Plex Mono', 90, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='w',
             tags=('datetime',)
         )
 
-        # Vertical separator line between clock and weather
-        self.canvas.create_line(
-            0, 0, 0, 0,
-            fill='white',
-            width=2,
-            capstyle=tk.ROUND,
-            tags=('divider',)
-        )
-
-        # Air quality text (same size as temperature, with auto-fit)
+        # Temperature (right-aligned, large)
         self.canvas.create_text(
             0, 0,
-            text="--",
-            font=('Segoe UI', 78),
-            fill='white',
-            anchor='w',
-            tags=('air_quality',)
+            text="--°",
+            font=('IBM Plex Mono', 90, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='e',
+            tags=('temperature',)
         )
 
-        # Airly logo (bottom right corner)
-        self.airly_logo = self.canvas.create_image(
+        # === SECTION 2: AIR QUALITY SLIDER ===
+        # Canvas for AQI slider (will be positioned in resize)
+        self.aqi_canvas = tk.Canvas(self.root, highlightthickness=0, bg='#667eea')
+        self.canvas.create_window(
             0, 0,
-            anchor='se',
-            tags=('airly_logo',)
+            window=self.aqi_canvas,
+            anchor='center',
+            tags=('aqi_slider',)
+        )
+        
+        # Store image references
+        self.aqi_bar_images = {}
+        self.aqi_indicator_image = None
+        
+        # === SECTION 3: TRANSPORT SCHEDULE ===
+        # Headers
+        self.canvas.create_text(
+            0, 0,
+            text="Linie",
+            font=('IBM Plex Mono', 24, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='w',
+            tags=('transport_header_linie',)
+        )
+        
+        self.canvas.create_text(
+            0, 0,
+            text="wann (min)",
+            font=('IBM Plex Mono', 24, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='center',
+            tags=('transport_header_wann',)
+        )
+        
+        self.canvas.create_text(
+            0, 0,
+            text="nach",
+            font=('IBM Plex Mono', 24, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='e',
+            tags=('transport_header_nach',)
+        )
+        
+        # Row 1: S42
+        self.canvas.create_text(
+            0, 0,
+            text="S42",
+            font=('IBM Plex Mono', 40, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='w',
+            tags=('transport_row1_linie',)
+        )
+        
+        self.canvas.create_text(
+            0, 0,
+            text="2 10 23",
+            font=('IBM Plex Mono', 40, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='center',
+            tags=('transport_row1_wann',)
+        )
+        
+        self.canvas.create_text(
+            0, 0,
+            text="Ostkreuz",
+            font=('IBM Plex Mono', 20, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='e',
+            tags=('transport_row1_nach',)
+        )
+        
+        # Row 2: S41
+        self.canvas.create_text(
+            0, 0,
+            text="S41",
+            font=('IBM Plex Mono', 40, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='w',
+            tags=('transport_row2_linie',)
+        )
+        
+        self.canvas.create_text(
+            0, 0,
+            text="2 10 23",
+            font=('IBM Plex Mono', 40, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='center',
+            tags=('transport_row2_wann',)
+        )
+        
+        self.canvas.create_text(
+            0, 0,
+            text="Sudkreuz",
+            font=('IBM Plex Mono', 20, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='e',
+            tags=('transport_row2_nach',)
         )
 
         # Gradient demo button (top-right corner, only in debug mode)
@@ -178,6 +274,9 @@ class WeatherDisplay:
 
         # Bind resize event
         self.canvas.bind('<Configure>', self.on_resize)
+        
+        # Load AQI slider assets
+        self.load_aqi_assets()
     
     def on_resize(self, event=None):
         """Handle window resize to reposition widgets (debounced for performance)"""
@@ -196,37 +295,57 @@ class WeatherDisplay:
         # Redraw gradient
         self.draw_gradient()
         
-        # Divider line in the middle
-        divider_x = width // 2
-        margin = int(width * 0.03)  # margin from screen edges and divider
-
-        # Left panel: Clock (time), centered in left half
-        clock_x = divider_x // 2  # center of left panel
-        clock_y = height * 0.45
-        clock_max_width = divider_x - (margin * 2)  # available width for clock
-        self.canvas.coords('datetime', clock_x, clock_y)
-        self.canvas.itemconfig('datetime', anchor='center')
+        margin = int(width * 0.05)  # 5% margin from screen edges
         
-        # Auto-fit clock to fill available space
-        self.auto_fit_text('datetime', clock_max_width, fill_space=True)
+        # === SECTION 1: HEADER (Top) ===
+        header_y = height * 0.12
         
-        # Divider line
-        self.canvas.coords('divider', divider_x, height * 0.20, divider_x, height * 0.80)
+        # Time (left-aligned)
+        self.canvas.coords('datetime', margin, header_y)
         
-        # Right panel: Temperature and air quality (left-aligned away from divider)
-        right_x = divider_x + margin
-        right_max_width = width - right_x - margin  # available width for right panel
-        temp_y = height * 0.35
-        air_quality_y = height * 0.55
+        # Temperature (right-aligned)
+        self.canvas.coords('temperature', width - margin, header_y)
         
-        self.canvas.coords('temperature', right_x, temp_y)
-        self.canvas.coords('air_quality', right_x, air_quality_y)
+        # === SECTION 2: AQI SLIDER (Middle) ===
+        aqi_y = height * 0.40
+        aqi_slider_width = int(width * 0.7)  # 70% of screen width
+        aqi_slider_height = 60
         
-        # Auto-fit air quality text if too wide
-        self.auto_fit_text('air_quality', right_max_width)
+        # Position the AQI canvas
+        self.canvas.coords('aqi_slider', width // 2, aqi_y)
         
-        # Position logo and button
-        self.canvas.coords('airly_logo', width - 20, height - 20)
+        # Resize AQI canvas
+        if self.aqi_canvas:
+            self.aqi_canvas.config(width=aqi_slider_width, height=aqi_slider_height)
+            self.setup_aqi_slider()
+        
+        # === SECTION 3: TRANSPORT SCHEDULE (Bottom) ===
+        transport_start_y = height * 0.60
+        row_spacing = height * 0.10
+        
+        # Calculate column positions
+        col1_x = margin  # Left column (Linie)
+        col2_x = width // 2  # Center column (wann)
+        col3_x = width - margin  # Right column (nach)
+        
+        # Headers
+        self.canvas.coords('transport_header_linie', col1_x, transport_start_y)
+        self.canvas.coords('transport_header_wann', col2_x, transport_start_y)
+        self.canvas.coords('transport_header_nach', col3_x, transport_start_y)
+        
+        # Row 1
+        row1_y = transport_start_y + row_spacing
+        self.canvas.coords('transport_row1_linie', col1_x, row1_y)
+        self.canvas.coords('transport_row1_wann', col2_x, row1_y)
+        self.canvas.coords('transport_row1_nach', col3_x, row1_y)
+        
+        # Row 2
+        row2_y = transport_start_y + row_spacing * 2
+        self.canvas.coords('transport_row2_linie', col1_x, row2_y)
+        self.canvas.coords('transport_row2_wann', col2_x, row2_y)
+        self.canvas.coords('transport_row2_nach', col3_x, row2_y)
+        
+        # Position button
         if self.debug_enabled:
             self.canvas.coords('test_button', width - 10, 10)
     
@@ -306,11 +425,18 @@ class WeatherDisplay:
         self.canvas.tag_lower('gradient')
         
         # Raise all UI elements above gradient
-        self.canvas.tag_raise('airly_logo')
-        self.canvas.tag_raise('air_quality')
-        self.canvas.tag_raise('divider')
         self.canvas.tag_raise('temperature')
         self.canvas.tag_raise('datetime')
+        self.canvas.tag_raise('aqi_slider')
+        self.canvas.tag_raise('transport_header_linie')
+        self.canvas.tag_raise('transport_header_wann')
+        self.canvas.tag_raise('transport_header_nach')
+        self.canvas.tag_raise('transport_row1_linie')
+        self.canvas.tag_raise('transport_row1_wann')
+        self.canvas.tag_raise('transport_row1_nach')
+        self.canvas.tag_raise('transport_row2_linie')
+        self.canvas.tag_raise('transport_row2_wann')
+        self.canvas.tag_raise('transport_row2_nach')
         if self.debug_enabled:
             self.canvas.tag_raise('test_button')
 
@@ -419,6 +545,143 @@ class WeatherDisplay:
 
         run_stage(0)
     
+    def load_aqi_assets(self):
+        """Load AQI slider images from assets folder"""
+        try:
+            from PIL import Image, ImageTk
+            
+            # Load full bar image
+            self.aqi_bar_images['full'] = ImageTk.PhotoImage(Image.open('assets/bar_full.png'))
+            self.aqi_indicator_image = ImageTk.PhotoImage(Image.open('assets/bar_indicator.png'))
+            
+            print("[AQI] Assets loaded successfully")
+        except Exception as e:
+            print(f"[AQI] Error loading assets: {e}")
+            # Create placeholder rectangles if images not found
+            self.aqi_bar_images = None
+    
+    def setup_aqi_slider(self):
+        """Setup the AQI slider visualization on the canvas"""
+        if not self.aqi_canvas:
+            return
+        
+        # Clear canvas
+        self.aqi_canvas.delete('all')
+        
+        # Update canvas background to match gradient
+        # Use the middle gradient color for better blending
+        r = (self.gradient_start[0] + self.gradient_end[0]) // 2
+        g = (self.gradient_start[1] + self.gradient_end[1]) // 2
+        b = (self.gradient_start[2] + self.gradient_end[2]) // 2
+        self.aqi_canvas.config(bg=f'#{r:02x}{g:02x}{b:02x}')
+        
+        canvas_width = self.aqi_canvas.winfo_width()
+        canvas_height = self.aqi_canvas.winfo_height()
+        
+        if canvas_width <= 1 or canvas_height <= 1:
+            return
+        
+        if self.aqi_bar_images:
+            try:
+                from PIL import Image, ImageTk
+                
+                # Load and resize bar_full.png to fill entire canvas width
+                full_img = Image.open('assets/bar_full.png')
+                full_resized = full_img.resize((canvas_width, canvas_height), Image.BILINEAR)
+                self.aqi_bar_images['full_resized'] = ImageTk.PhotoImage(full_resized)
+                
+                # Place full bar spanning the entire canvas (left edge = 0, right edge = 100)
+                self.aqi_canvas.create_image(
+                    canvas_width // 2, canvas_height // 2,
+                    image=self.aqi_bar_images['full_resized'],
+                    tags=('bar_full',)
+                )
+                
+                # Create indicator (initially at position 0)
+                self.aqi_canvas.create_image(
+                    0, canvas_height // 2,
+                    image=self.aqi_indicator_image,
+                    anchor='center',
+                    tags=('indicator',)
+                )
+                
+                print(f"[AQI] Slider setup complete - canvas: {canvas_width}x{canvas_height}")
+                
+                # Re-apply the current CAQI value to position the indicator
+                self.root.after(100, lambda: self.update_aqi(self.current_caqi_value))
+            except Exception as e:
+                print(f"[AQI] Error resizing images: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fall back to rectangles
+                self.aqi_bar_images = None
+        
+        if not self.aqi_bar_images:
+            # Fallback: draw gradient rectangle (0-100)
+            self.aqi_canvas.create_rectangle(
+                0, 0, canvas_width, canvas_height,
+                fill='#4CAF50', outline='',
+                tags=('bar_full',)
+            )
+            
+            # White indicator line
+            self.aqi_canvas.create_line(
+                0, 0, 0, canvas_height,
+                fill='white', width=4,
+                tags=('indicator',)
+            )
+    
+    def update_aqi(self, caqi_value):
+        """Update AQI indicator position based on CAQI value
+        
+        CAQI is inverted:
+        - CAQI 100+ = bad air = indicator at LEFT (0%)
+        - CAQI ~50-75 = medium = indicator in MIDDLE
+        - CAQI 0-25 = good air = indicator at RIGHT (100%)
+        
+        Args:
+            caqi_value: Raw CAQI value (0 to 100+)
+        """
+        # Store the value for re-applying after resize
+        self.current_caqi_value = caqi_value
+        
+        if not self.aqi_canvas:
+            print("[AQI] No aqi_canvas available")
+            return
+        
+        canvas_width = self.aqi_canvas.winfo_width()
+        canvas_height = self.aqi_canvas.winfo_height()
+        
+        if canvas_width <= 1:
+            print(f"[AQI] Canvas too small: {canvas_width}x{canvas_height}, will retry later")
+            # Schedule a retry after canvas is ready
+            self.root.after(500, lambda: self.update_aqi(caqi_value))
+            return
+        
+        # Clamp CAQI to 0-100 range, then invert
+        # CAQI 0 -> position 100% (right), CAQI 100+ -> position 0% (left)
+        clamped_caqi = max(0, min(100, caqi_value))
+        position_percent = 100 - clamped_caqi
+        
+        # Calculate X position - position_percent maps to canvas width
+        # 0% = left edge, 100% = right edge
+        x_pos = int((position_percent / 100) * canvas_width)
+        
+        print(f"[AQI] CAQI: {caqi_value} -> clamped: {clamped_caqi} -> position: {position_percent}% -> x_pos: {x_pos} (canvas_width: {canvas_width})")
+        
+        # Move indicator
+        indicator = self.aqi_canvas.find_withtag('indicator')
+        if indicator:
+            if self.aqi_indicator_image:
+                # Image-based indicator
+                self.aqi_canvas.coords('indicator', x_pos, canvas_height // 2)
+            else:
+                # Line-based indicator
+                self.aqi_canvas.coords('indicator', x_pos, 0, x_pos, canvas_height)
+            print(f"[AQI] Indicator moved to {x_pos}")
+        else:
+            print("[AQI] No indicator found on canvas")
+    
     def fetch_air_quality(self):
         """Fetch air quality data from Airly API"""
         print(f"[AQI] Fetching air quality data from Airly...")
@@ -470,49 +733,34 @@ class WeatherDisplay:
                 print(f"[AQI] Values found: {len(values)}")
                 
                 # Extract AIRLY_CAQI or PM2.5
-                air_quality_text = "--"
+                aqi_score = 0
                 for index in indexes:
                     if index.get('name') == 'AIRLY_CAQI':
                         caqi_value = round(index.get('value', 0))
-                        status = self.caqi_to_status(caqi_value)
-                        air_quality_text = status
-                        print(f"[AQI] Found CAQI index: {caqi_value} -> {status}")
+                        aqi_score = caqi_value
+                        print(f"[AQI] Found CAQI index: {caqi_value}")
                         break
                 
                 # Fallback to PM2.5 if CAQI not found
-                if air_quality_text == "--":
+                if aqi_score == 0:
                     for value in values:
                         if value.get('name') == 'PM25':
                             pm25_value = round(value.get('value', 0), 1)
-                            # Rough PM2.5 to CAQI conversion (PM2.5: 0-12 good, 12-35 moderate, etc.)
-                            if pm25_value <= 12:
-                                status = "Take a deep breath!"
-                            elif pm25_value <= 35:
-                                status = "Air is getting better."
-                            elif pm25_value <= 55:
-                                status = "It's ok... don't "
-                            elif pm25_value <= 150:
-                                status = "Try to limit outdoor activities"
-                            else:
-                                status = "Hazardous, do not go out!"
-                            air_quality_text = status
-                            print(f"[AQI] Found PM2.5: {pm25_value} -> {status}")
+                            # Convert PM2.5 to 0-100 scale (rough approximation)
+                            aqi_score = min(100, int(pm25_value * 0.5))
+                            print(f"[AQI] Found PM2.5: {pm25_value} -> score {aqi_score}")
                             break
                 
-                print(f"[AQI] Setting air quality text: {air_quality_text}")
-                self.air_quality = air_quality_text
-                self.canvas.itemconfig('air_quality', text=air_quality_text)
+                # Update the slider
+                print(f"[AQI] Updating slider with score: {aqi_score}")
+                self.update_aqi(aqi_score)
                 print(f"[AQI] Air quality updated successfully")
-                
-                # Load Airly logo
-                self.load_airly_logo()
             else:
                 raise Exception('Air quality data not found in response')
         except Exception as e:
             print(f"[AQI] Error fetching air quality: {e}")
             import traceback
             traceback.print_exc()
-            self.canvas.itemconfig('air_quality', text="AQI: Error")
     
     def caqi_to_status(self, caqi_value):
         """Convert CAQI value to verbal air quality status"""
@@ -527,52 +775,6 @@ class WeatherDisplay:
             return "Bad, but will survive"
         else:
             return "Hazardous, do not open the windows"
-    
-    def load_airly_logo(self):
-        """Load and display Airly logo from CDN"""
-        try:
-            print("[Logo] Loading Airly logo...")
-            # Direct PNG URL provided by user
-            png_url = "https://cdn.airly.org/assets/brand/logo/primary/airly-1024.png"
-
-            resp = requests.get(png_url, timeout=8)
-            if resp.status_code == 200 and resp.headers.get('Content-Type', '').lower().startswith('image/'):
-                img = Image.open(BytesIO(resp.content))
-                # Limit width to 160px, keep aspect ratio
-                # Use BILINEAR instead of LANCZOS for better performance on Pi Zero
-                max_w = 160
-                if img.width > max_w:
-                    new_h = int(img.height * (max_w / img.width))
-                    img = img.resize((max_w, new_h), Image.BILINEAR)
-
-                self.airly_logo_photo = ImageTk.PhotoImage(img)
-                # Assign to canvas image item
-                self.canvas.itemconfig('airly_logo', image=self.airly_logo_photo)
-                # Ensure on top and position at bottom-right
-                w = self.canvas.winfo_width()
-                h = self.canvas.winfo_height()
-                self.canvas.coords('airly_logo', w - 20, h - 20)
-                self.canvas.tag_raise('airly_logo')
-                print("[Logo] Airly logo set successfully")
-            else:
-                raise Exception(f"PNG not available (status {resp.status_code}, content-type {resp.headers.get('Content-Type')})")
-        except Exception as e:
-            print(f"[Logo] Error loading Airly logo: {e}")
-            # Fallback to text logo placeholder
-            if not self.canvas.find_withtag('airly_logo_text'):
-                self.canvas.create_text(
-                    0, 0,
-                    text="Airly",
-                        font=('Segoe UI', 16, 'bold'),
-                    fill='white',
-                    anchor='se',
-                    tags=('airly_logo_text',)
-                )
-            # Position placeholder at bottom-right
-            w = self.canvas.winfo_width()
-            h = self.canvas.winfo_height()
-            self.canvas.coords('airly_logo_text', w - 20, h - 20)
-            self.canvas.tag_raise('airly_logo_text')
     
     def get_coordinates_from_city(self):
         """Get coordinates from city name using geocoding"""
@@ -684,12 +886,147 @@ class WeatherDisplay:
         # Check again in 1 minute
         self._aqi_after_id = self.root.after(60 * 1000, self.schedule_aqi_update)
     
+    def fetch_transport(self):
+        """Fetch transport departure data from VBB API
+        
+        Makes a single API call for S-Bahn departures, then groups by line name
+        to display up to 2 different lines in separate rows.
+        """
+        if self.debug_enabled:
+            print("[Transport] Fetching transport data...")
+        
+        try:
+            # Single API call for all S-Bahn departures
+            response = requests.get(build_transport_url(), timeout=15)
+            data = response.json()
+            departures = data.get('departures', [])
+            
+            if self.debug_enabled:
+                print(f"[Transport] Received {len(departures)} departures")
+            
+            # Group departures by line name (preserves insertion order)
+            lines = {}
+            for dep in departures:
+                line_name = dep.get('line', {}).get('name', 'Unknown')
+                if line_name not in lines:
+                    lines[line_name] = []
+                lines[line_name].append(dep)
+            
+            # Get first two distinct line groups
+            line_groups = list(lines.values())[:2]
+            
+            # Update rows with available line groups
+            if len(line_groups) >= 1:
+                self.update_transport_row(1, line_groups[0])
+            else:
+                self.update_transport_row(1, [])
+            
+            if len(line_groups) >= 2:
+                self.update_transport_row(2, line_groups[1])
+            else:
+                self.update_transport_row(2, [])
+            
+            if self.debug_enabled:
+                print(f"[Transport] Found {len(lines)} distinct lines: {list(lines.keys())}")
+        except requests.exceptions.Timeout:
+            print("[Transport] Request timed out, keeping old data")
+        except requests.exceptions.ConnectionError:
+            print("[Transport] No connection, will retry later")
+        except Exception as e:
+            print(f"[Transport] Error fetching transport data: {e}")
+    
+    def update_transport_row(self, row_num, departures):
+        """Update a transport row with departure data
+        
+        Args:
+            row_num: 1 or 2 (which row to update)
+            departures: List of departure objects from VBB API
+        """
+        if not departures:
+            self.canvas.itemconfig(f'transport_row{row_num}_linie', text="--")
+            self.canvas.itemconfig(f'transport_row{row_num}_wann', text="--")
+            self.canvas.itemconfig(f'transport_row{row_num}_nach', text="--")
+            return
+        
+        # Get line name from first departure
+        first_departure = departures[0]
+        line_name = first_departure.get('line', {}).get('name', '--')
+        
+        # Get destination - use direction field and clean it up
+        direction = first_departure.get('direction', '')
+        # The direction is like "Ringbahn S42 ⟲" - extract meaningful destination
+        dest_stop = first_departure.get('destination', {})
+        if dest_stop:
+            nach = dest_stop.get('name', '--')
+            # Clean up station name
+            nach = nach.replace(' (Berlin)', '').replace('S ', '').replace('Bhf', '').replace('S+U ', '').strip()
+        else:
+            nach = direction.split()[-1] if direction else '--'
+        
+        # Calculate minutes for up to 3 departures
+        minutes_list = []
+        now = datetime.now()
+        
+        for dep in departures[:3]:  # Get up to 3 departures
+            when_str = dep.get('when')
+            delay = dep.get('delay', 0) or 0
+            
+            if when_str:
+                try:
+                    # Parse ISO format datetime
+                    when_dt = datetime.fromisoformat(when_str.replace('Z', '+00:00'))
+                    # Remove timezone for comparison with local time
+                    when_local = when_dt.replace(tzinfo=None)
+                    
+                    # Calculate minutes until departure
+                    delta = when_local - now
+                    minutes = int(delta.total_seconds() / 60)
+                    
+                    if minutes < 0:
+                        minutes = 0
+                    
+                    # Format with delay if present (delay is in seconds)
+                    if delay > 0:
+                        delay_min = delay // 60
+                        minutes_list.append(f"{minutes}+{delay_min}")
+                    else:
+                        minutes_list.append(str(minutes))
+                except Exception as e:
+                    if self.debug_enabled:
+                        print(f"[Transport] Error parsing time: {e}")
+                    minutes_list.append("--")
+        
+        # Pad to 3 items with "?" for missing departures
+        while len(minutes_list) < 3:
+            minutes_list.append("?")
+        
+        # Join minutes with spaces
+        wann_text = " ".join(minutes_list[:3])
+        
+        # Update UI
+        self.canvas.itemconfig(f'transport_row{row_num}_linie', text=line_name)
+        self.canvas.itemconfig(f'transport_row{row_num}_wann', text=wann_text)
+        self.canvas.itemconfig(f'transport_row{row_num}_nach', text=nach)
+        
+        if self.debug_enabled:
+            print(f"[Transport] Row {row_num}: {line_name} | {wann_text} | {nach}")
+    
+    def schedule_transport_update(self):
+        """Schedule transport updates using Tkinter's after()"""
+        try:
+            self.fetch_transport()
+        except Exception as e:
+            print(f"Error in transport update: {e}")
+        # Schedule next update
+        self._transport_after_id = self.root.after(TRANSPORT_REFRESH_INTERVAL * 1000, self.schedule_transport_update)
+    
     def start_updates(self):
         """Start all update schedules using Tkinter's after() (more efficient than threads on Pi Zero)"""
         # Initial data fetch
         self.get_coordinates_from_city()
         self.fetch_weather()
         self.fetch_air_quality()
+        self.fetch_transport()
         self.update_datetime()
         
         # Schedule periodic updates using after() instead of threads
@@ -698,6 +1035,7 @@ class WeatherDisplay:
         self._weather_after_id = self.root.after(REFRESH_INTERVAL * 1000, self.schedule_weather_update)
         self._aqi_after_id = self.root.after(60 * 1000, self.schedule_aqi_update)
         self._time_after_id = self.root.after(TIME_UPDATE_INTERVAL * 1000, self.schedule_time_update)
+        self._transport_after_id = self.root.after(TRANSPORT_REFRESH_INTERVAL * 1000, self.schedule_transport_update)
 
 
 def main():
