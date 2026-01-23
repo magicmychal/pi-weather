@@ -21,7 +21,8 @@ load_dotenv()
 # Configuration
 REFRESH_INTERVAL = 1800  # Refresh weather every 30 minutes (in seconds)
 TIME_UPDATE_INTERVAL = 59  # Update time every minute (in seconds)
-TRANSPORT_REFRESH_INTERVAL = 300  # Refresh transport every 5 minutes (in seconds)
+TRANSPORT_REFRESH_INTERVAL = 360  # Refresh transport API every 6 minutes (in seconds)
+TRANSPORT_DISPLAY_INTERVAL = 60  # Update transport countdown display every minute (in seconds)
 
 # Transport API configuration (VBB)
 TRANSPORT_API_BASE = "https://v6.vbb.transport.rest/stops"
@@ -126,7 +127,12 @@ class WeatherDisplay:
         self._weather_after_id = None  # Scheduled weather update
         self._time_after_id = None  # Scheduled time update
         self._aqi_after_id = None  # Scheduled AQI update
-        self._transport_after_id = None  # Scheduled transport update
+        self._transport_after_id = None  # Scheduled transport API update
+        self._transport_display_after_id = None  # Scheduled transport display update
+        
+        # Cached transport departures (raw data with timestamps for live countdown)
+        self._cached_departures_row1 = []
+        self._cached_departures_row2 = []
         
         # Create UI elements
         self.create_widgets()
@@ -860,13 +866,19 @@ class WeatherDisplay:
         self._weather_after_id = self.root.after(REFRESH_INTERVAL * 1000, self.schedule_weather_update)
     
     def schedule_time_update(self):
-        """Schedule time updates using Tkinter's after() (more efficient than threads)"""
+        """Schedule time updates synced to the start of each minute"""
         try:
             self.update_datetime()
         except Exception as e:
             print(f"Error in time update: {e}")
-        # Schedule next update
-        self._time_after_id = self.root.after(TIME_UPDATE_INTERVAL * 1000, self.schedule_time_update)
+        
+        # Calculate milliseconds until the next minute starts
+        now = datetime.now()
+        seconds_until_next_minute = 60 - now.second
+        ms_until_next_minute = (seconds_until_next_minute * 1000) - (now.microsecond // 1000)
+        
+        # Schedule next update at the start of the next minute
+        self._time_after_id = self.root.after(ms_until_next_minute, self.schedule_time_update)
     
     def schedule_aqi_update(self):
         """Schedule air quality updates using Tkinter's after() - only at 6am, 3pm, and 8pm"""
@@ -915,16 +927,19 @@ class WeatherDisplay:
             # Get first two distinct line groups
             line_groups = list(lines.values())[:2]
             
-            # Update rows with available line groups
+            # Store cached departures for live countdown updates
             if len(line_groups) >= 1:
-                self.update_transport_row(1, line_groups[0])
+                self._cached_departures_row1 = line_groups[0]
             else:
-                self.update_transport_row(1, [])
+                self._cached_departures_row1 = []
             
             if len(line_groups) >= 2:
-                self.update_transport_row(2, line_groups[1])
+                self._cached_departures_row2 = line_groups[1]
             else:
-                self.update_transport_row(2, [])
+                self._cached_departures_row2 = []
+            
+            # Update display with fresh data
+            self.update_transport_display()
             
             if self.debug_enabled:
                 print(f"[Transport] Found {len(lines)} distinct lines: {list(lines.keys())}")
@@ -963,13 +978,17 @@ class WeatherDisplay:
         else:
             nach = direction.split()[-1] if direction else '--'
         
-        # Calculate minutes for up to 3 departures
+        # Calculate minutes for up to 3 valid departures
         minutes_list = []
         now = datetime.now()
         
-        for dep in departures[:3]:  # Get up to 3 departures
+        for dep in departures:  # Iterate through all departures
+            if len(minutes_list) >= 3:
+                break  # We have enough departures
+            
             when_str = dep.get('when')
             delay = dep.get('delay', 0) or 0
+            delay_min = delay // 60 if delay > 0 else 0
             
             if when_str:
                 try:
@@ -982,19 +1001,21 @@ class WeatherDisplay:
                     delta = when_local - now
                     minutes = int(delta.total_seconds() / 60)
                     
+                    # Skip departures that have passed (0 or less) unless delayed > 1 min
+                    if minutes <= 0 and delay_min <= 1:
+                        continue  # Skip this departure, move to next
+                    
                     if minutes < 0:
                         minutes = 0
                     
                     # Format with delay if present (delay is in seconds)
-                    if delay > 0:
-                        delay_min = delay // 60
+                    if delay_min > 0:
                         minutes_list.append(f"{minutes}+{delay_min}")
                     else:
                         minutes_list.append(str(minutes))
                 except Exception as e:
                     if self.debug_enabled:
                         print(f"[Transport] Error parsing time: {e}")
-                    minutes_list.append("--")
         
         # Pad to 3 items with "?" for missing departures
         while len(minutes_list) < 3:
@@ -1012,13 +1033,32 @@ class WeatherDisplay:
             print(f"[Transport] Row {row_num}: {line_name} | {wann_text} | {nach}")
     
     def schedule_transport_update(self):
-        """Schedule transport updates using Tkinter's after()"""
+        """Schedule transport API updates using Tkinter's after()"""
         try:
             self.fetch_transport()
         except Exception as e:
             print(f"Error in transport update: {e}")
-        # Schedule next update
+        # Schedule next API update
         self._transport_after_id = self.root.after(TRANSPORT_REFRESH_INTERVAL * 1000, self.schedule_transport_update)
+    
+    def update_transport_display(self):
+        """Update transport display from cached data (recalculates countdown times)
+        
+        This is called every minute to update the countdown display without
+        making new API calls. The cached departure times are used to recalculate
+        how many minutes remain until each departure.
+        """
+        self.update_transport_row(1, self._cached_departures_row1)
+        self.update_transport_row(2, self._cached_departures_row2)
+    
+    def schedule_transport_display_update(self):
+        """Schedule transport display updates (countdown refresh) using Tkinter's after()"""
+        try:
+            self.update_transport_display()
+        except Exception as e:
+            print(f"Error in transport display update: {e}")
+        # Schedule next display update
+        self._transport_display_after_id = self.root.after(TRANSPORT_DISPLAY_INTERVAL * 1000, self.schedule_transport_display_update)
     
     def start_updates(self):
         """Start all update schedules using Tkinter's after() (more efficient than threads on Pi Zero)"""
@@ -1034,8 +1074,15 @@ class WeatherDisplay:
         # and doesn't require thread-safe UI updates
         self._weather_after_id = self.root.after(REFRESH_INTERVAL * 1000, self.schedule_weather_update)
         self._aqi_after_id = self.root.after(60 * 1000, self.schedule_aqi_update)
-        self._time_after_id = self.root.after(TIME_UPDATE_INTERVAL * 1000, self.schedule_time_update)
+        
+        # Sync time updates to the start of the next minute
+        now = datetime.now()
+        seconds_until_next_minute = 60 - now.second
+        ms_until_next_minute = (seconds_until_next_minute * 1000) - (now.microsecond // 1000)
+        self._time_after_id = self.root.after(ms_until_next_minute, self.schedule_time_update)
+        
         self._transport_after_id = self.root.after(TRANSPORT_REFRESH_INTERVAL * 1000, self.schedule_transport_update)
+        self._transport_display_after_id = self.root.after(TRANSPORT_DISPLAY_INTERVAL * 1000, self.schedule_transport_display_update)
 
 
 def main():
