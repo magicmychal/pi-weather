@@ -10,6 +10,8 @@ import requests
 from datetime import datetime
 import time
 import os
+import re
+import html
 from dotenv import load_dotenv
 from PIL import Image, ImageTk
 from io import BytesIO
@@ -19,10 +21,30 @@ from urllib.request import urlopen
 load_dotenv()
 
 # Configuration
-REFRESH_INTERVAL = 1800  # Refresh weather every 30 minutes (in seconds)
+REFRESH_INTERVAL = 900  # Open-Meteo "current" data is 15-minutely, faster polling gains nothing
+WEATHER_SLOT_OFFSET = 120  # Fetch 2 min after each quarter hour so the new data is published
+WEATHER_RETRY_DELAY = 120  # Retry sooner after a failed weather fetch (in seconds)
 TIME_UPDATE_INTERVAL = 59  # Update time every minute (in seconds)
 TRANSPORT_REFRESH_INTERVAL = 360  # Refresh transport API every 6 minutes (in seconds)
 TRANSPORT_DISPLAY_INTERVAL = 60  # Update transport countdown display every minute (in seconds)
+
+# Text colour adapts to background luminance; the gap between thresholds prevents flicker
+TEXT_LIGHT = '#FFFFFF'
+TEXT_DARK = '#333333'
+LUM_TO_DARK = 0.45
+LUM_TO_LIGHT = 0.35
+TEXT_FADE_STEPS = 8
+TEXT_FADE_MS = 150
+
+# Transport message ticker
+TICKER_STEP_PX = 4
+TICKER_STEP_MS = 50
+TICKER_SEPARATOR = '   +++   '
+TRANSPORT_TABLE_TAGS = (
+    'transport_header_linie', 'transport_header_wann', 'transport_header_nach',
+    'transport_row1_linie', 'transport_row1_wann', 'transport_row1_nach',
+    'transport_row2_linie', 'transport_row2_wann', 'transport_row2_nach',
+)
 
 # Transport API configuration (VBB)
 TRANSPORT_API_BASE = "https://v6.vbb.transport.rest/stops"
@@ -43,6 +65,7 @@ def build_transport_url():
         f"&ferry=false"
         f"&express=false"
         f"&regional=false"
+        f"&remarks=true"
     )
 AIRLY_API_KEY = os.getenv('AIRLY_API_KEY')
 AIRLY_LATITUDE = os.getenv('AIRLY_LATITUDE')
@@ -133,6 +156,17 @@ class WeatherDisplay:
         # Cached transport departures (raw data with timestamps for live countdown)
         self._cached_departures_row1 = []
         self._cached_departures_row2 = []
+        self._transport_remarks = []
+        self._transport_error_message = None
+
+        self._text_is_dark = False
+        self._text_color = TEXT_LIGHT
+        self._text_fade_after_id = None
+
+        self._ticker_after_id = None
+        self._ticker_text = ''
+        self._ticker_visible = False
+        self._ticker_y = 0
         
         # Create UI elements
         self.create_widgets()
@@ -154,7 +188,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 90, 'bold italic'),
             fill='#FFFFFF',
             anchor='w',
-            tags=('datetime',)
+            tags=('datetime', 'fg_text')
         )
 
         # Temperature (right-aligned, large)
@@ -164,7 +198,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 90, 'bold italic'),
             fill='#FFFFFF',
             anchor='e',
-            tags=('temperature',)
+            tags=('temperature', 'fg_text')
         )
 
         # === SECTION 2: AIR QUALITY SLIDER ===
@@ -189,7 +223,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 24, 'bold italic'),
             fill='#FFFFFF',
             anchor='w',
-            tags=('transport_header_linie',)
+            tags=('transport_header_linie', 'fg_text')
         )
         
         self.canvas.create_text(
@@ -198,7 +232,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 24, 'bold italic'),
             fill='#FFFFFF',
             anchor='center',
-            tags=('transport_header_wann',)
+            tags=('transport_header_wann', 'fg_text')
         )
         
         self.canvas.create_text(
@@ -207,7 +241,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 24, 'bold italic'),
             fill='#FFFFFF',
             anchor='e',
-            tags=('transport_header_nach',)
+            tags=('transport_header_nach', 'fg_text')
         )
         
         # Row 1: S42
@@ -217,7 +251,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 40, 'bold italic'),
             fill='#FFFFFF',
             anchor='w',
-            tags=('transport_row1_linie',)
+            tags=('transport_row1_linie', 'fg_text')
         )
         
         self.canvas.create_text(
@@ -226,7 +260,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 40, 'bold italic'),
             fill='#FFFFFF',
             anchor='center',
-            tags=('transport_row1_wann',)
+            tags=('transport_row1_wann', 'fg_text')
         )
         
         self.canvas.create_text(
@@ -235,7 +269,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 20, 'bold italic'),
             fill='#FFFFFF',
             anchor='e',
-            tags=('transport_row1_nach',)
+            tags=('transport_row1_nach', 'fg_text')
         )
         
         # Row 2: S41
@@ -245,7 +279,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 40, 'bold italic'),
             fill='#FFFFFF',
             anchor='w',
-            tags=('transport_row2_linie',)
+            tags=('transport_row2_linie', 'fg_text')
         )
         
         self.canvas.create_text(
@@ -254,7 +288,7 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 40, 'bold italic'),
             fill='#FFFFFF',
             anchor='center',
-            tags=('transport_row2_wann',)
+            tags=('transport_row2_wann', 'fg_text')
         )
         
         self.canvas.create_text(
@@ -263,7 +297,18 @@ class WeatherDisplay:
             font=('IBM Plex Mono', 20, 'bold italic'),
             fill='#FFFFFF',
             anchor='e',
-            tags=('transport_row2_nach',)
+            tags=('transport_row2_nach', 'fg_text')
+        )
+
+        # One-line ticker shown in place of the rows when only messages are available
+        self.canvas.create_text(
+            0, 0,
+            text="",
+            font=('IBM Plex Mono', 40, 'bold italic'),
+            fill='#FFFFFF',
+            anchor='w',
+            state='hidden',
+            tags=('transport_ticker', 'fg_text')
         )
 
         # Gradient demo button (top-right corner, only in debug mode)
@@ -350,6 +395,9 @@ class WeatherDisplay:
         self.canvas.coords('transport_row2_linie', col1_x, row2_y)
         self.canvas.coords('transport_row2_wann', col2_x, row2_y)
         self.canvas.coords('transport_row2_nach', col3_x, row2_y)
+
+        self._ticker_y = (row1_y + row2_y) / 2
+        self._restart_ticker()
         
         # Position button
         if self.debug_enabled:
@@ -443,8 +491,56 @@ class WeatherDisplay:
         self.canvas.tag_raise('transport_row2_linie')
         self.canvas.tag_raise('transport_row2_wann')
         self.canvas.tag_raise('transport_row2_nach')
+        self.canvas.tag_raise('transport_ticker')
         if self.debug_enabled:
             self.canvas.tag_raise('test_button')
+
+        self._update_text_contrast()
+
+    @staticmethod
+    def _hex_to_rgb(hex_str):
+        return int(hex_str[1:3], 16), int(hex_str[3:5], 16), int(hex_str[5:7], 16)
+
+    @staticmethod
+    def _relative_luminance(rgb):
+        """WCAG relative luminance (0 = black, 1 = white)"""
+        def channel(c):
+            c = c / 255
+            return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        r, g, b = (channel(c) for c in rgb)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def _update_text_contrast(self):
+        """Switch all text between light and dark grey based on mean background luminance"""
+        lum = (self._relative_luminance(self.gradient_start)
+               + self._relative_luminance(self.gradient_end)) / 2
+        if not self._text_is_dark and lum > LUM_TO_DARK:
+            self._text_is_dark = True
+        elif self._text_is_dark and lum < LUM_TO_LIGHT:
+            self._text_is_dark = False
+        else:
+            return
+        self._fade_text_to(TEXT_DARK if self._text_is_dark else TEXT_LIGHT)
+
+    def _fade_text_to(self, target_hex):
+        if self._text_fade_after_id:
+            self.root.after_cancel(self._text_fade_after_id)
+            self._text_fade_after_id = None
+
+        start = self._hex_to_rgb(self._text_color)
+        target = self._hex_to_rgb(target_hex)
+
+        def step(i):
+            t = i / TEXT_FADE_STEPS
+            rgb = tuple(int(s + (e - s) * t) for s, e in zip(start, target))
+            self._text_color = '#{:02x}{:02x}{:02x}'.format(*rgb)
+            self.canvas.itemconfig('fg_text', fill=self._text_color)
+            if i < TEXT_FADE_STEPS:
+                self._text_fade_after_id = self.root.after(TEXT_FADE_MS, lambda: step(i + 1))
+            else:
+                self._text_fade_after_id = None
+
+        step(1)
 
     def get_time_phase(self):
         if self.phase_override:
@@ -810,9 +906,9 @@ class WeatherDisplay:
         self.canvas.itemconfig('location', text=self.location_name)
     
     def fetch_weather(self):
-        """Fetch weather data from Open-Meteo API"""
+        """Fetch weather data from Open-Meteo API. Returns True on success."""
         if self.latitude is None or self.longitude is None:
-            return
+            return False
         
         try:
             url = (
@@ -823,13 +919,15 @@ class WeatherDisplay:
             )
             
             response = requests.get(url, timeout=10)
+            response.raise_for_status()
             data = response.json()
             
-            self.update_weather_display(data)
+            return self.update_weather_display(data)
         except Exception as e:
             print(f"Error fetching weather: {e}")
             self.canvas.itemconfig('temperature', text="Error")
             self.canvas.itemconfig('description', text="Unable to fetch weather")
+            return False
     
     def update_weather_display(self, data):
         """Update UI with weather data"""
@@ -846,8 +944,10 @@ class WeatherDisplay:
             self.canvas.itemconfig('description', text=description)
             self.last_weather_code = weather_code
             self.update_background()
+            return True
         except Exception as e:
             print(f"Error updating display: {e}")
+            return False
     
     def update_datetime(self):
         """Update date and time display"""
@@ -856,14 +956,26 @@ class WeatherDisplay:
         self.canvas.itemconfig('datetime', text=formatted)
         self.update_background()
     
+    def _ms_until_next_weather_slot(self):
+        """Milliseconds until the next quarter hour + WEATHER_SLOT_OFFSET"""
+        now = datetime.now()
+        seconds_into_slot = (now.minute * 60 + now.second) % REFRESH_INTERVAL
+        wait = (WEATHER_SLOT_OFFSET - seconds_into_slot) % REFRESH_INTERVAL or REFRESH_INTERVAL
+        return wait * 1000 - now.microsecond // 1000
+
     def schedule_weather_update(self):
-        """Schedule weather updates using Tkinter's after() (more efficient than threads)"""
+        """Fetch weather now, then schedule the next fetch on the quarter-hour grid"""
+        ok = False
         try:
-            self.fetch_weather()
+            ok = self.fetch_weather()
         except Exception as e:
             print(f"Error in weather update: {e}")
-        # Schedule next update
-        self._weather_after_id = self.root.after(REFRESH_INTERVAL * 1000, self.schedule_weather_update)
+        delay_ms = self._ms_until_next_weather_slot()
+        if not ok:
+            delay_ms = min(delay_ms, WEATHER_RETRY_DELAY * 1000)
+        if self.debug_enabled:
+            print(f"[Weather] Next fetch in {delay_ms // 1000}s")
+        self._weather_after_id = self.root.after(delay_ms, self.schedule_weather_update)
     
     def schedule_time_update(self):
         """Schedule time updates synced to the start of each minute"""
@@ -910,8 +1022,16 @@ class WeatherDisplay:
         try:
             # Single API call for all S-Bahn departures
             response = requests.get(build_transport_url(), timeout=15)
+            if not response.ok:
+                self._transport_error_message = self._extract_api_error_message(response)
+                print(f"[Transport] API error {response.status_code}: {self._transport_error_message}")
+                self.update_transport_display()
+                return
+
             data = response.json()
             departures = data.get('departures', [])
+            self._transport_error_message = None
+            self._transport_remarks = self._collect_remarks(departures)
             
             if self.debug_enabled:
                 print(f"[Transport] Received {len(departures)} departures")
@@ -949,6 +1069,31 @@ class WeatherDisplay:
             print("[Transport] No connection, will retry later")
         except Exception as e:
             print(f"[Transport] Error fetching transport data: {e}")
+
+    @staticmethod
+    def _extract_api_error_message(response):
+        """Return the 'message' field of an API error body, if any"""
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        if isinstance(body, dict) and isinstance(body.get('message'), str):
+            return ' '.join(body['message'].split()) or None
+        return None
+
+    @staticmethod
+    def _collect_remarks(departures):
+        """Collect unique warning/status remarks (disruptions, cancellations) from departures"""
+        messages = []
+        for dep in departures:
+            for remark in dep.get('remarks') or []:
+                if remark.get('type') not in ('warning', 'status'):
+                    continue
+                raw = remark.get('summary') or remark.get('text') or ''
+                text = ' '.join(html.unescape(re.sub(r'<[^>]+>', ' ', raw)).split())
+                if text and text not in messages:
+                    messages.append(text)
+        return messages
     
     def update_transport_row(self, row_num, departures):
         """Update a transport row with departure data
@@ -956,12 +1101,15 @@ class WeatherDisplay:
         Args:
             row_num: 1 or 2 (which row to update)
             departures: List of departure objects from VBB API
+
+        Returns:
+            True if at least one upcoming departure time is shown
         """
         if not departures:
             self.canvas.itemconfig(f'transport_row{row_num}_linie', text="--")
             self.canvas.itemconfig(f'transport_row{row_num}_wann', text="--")
             self.canvas.itemconfig(f'transport_row{row_num}_nach', text="--")
-            return
+            return False
         
         # Get line name from first departure
         first_departure = departures[0]
@@ -1017,6 +1165,8 @@ class WeatherDisplay:
                     if self.debug_enabled:
                         print(f"[Transport] Error parsing time: {e}")
         
+        has_data = bool(minutes_list)
+
         # Pad to 3 items with "?" for missing departures
         while len(minutes_list) < 3:
             minutes_list.append("?")
@@ -1031,6 +1181,7 @@ class WeatherDisplay:
         
         if self.debug_enabled:
             print(f"[Transport] Row {row_num}: {line_name} | {wann_text} | {nach}")
+        return has_data
     
     def schedule_transport_update(self):
         """Schedule transport API updates using Tkinter's after()"""
@@ -1048,8 +1199,68 @@ class WeatherDisplay:
         making new API calls. The cached departure times are used to recalculate
         how many minutes remain until each departure.
         """
-        self.update_transport_row(1, self._cached_departures_row1)
-        self.update_transport_row(2, self._cached_departures_row2)
+        row1_has_data = self.update_transport_row(1, self._cached_departures_row1)
+        row2_has_data = self.update_transport_row(2, self._cached_departures_row2)
+
+        messages = []
+        if self._transport_error_message:
+            messages.append(self._transport_error_message)
+        messages.extend(m for m in self._transport_remarks if m not in messages)
+
+        if row1_has_data or row2_has_data or not messages:
+            self._hide_ticker()
+        else:
+            self._show_ticker(TICKER_SEPARATOR.join(messages))
+
+    def _show_ticker(self, text):
+        for tag in TRANSPORT_TABLE_TAGS:
+            self.canvas.itemconfig(tag, state='hidden')
+        self.canvas.itemconfig('transport_ticker', state='normal')
+        if text != self._ticker_text or not self._ticker_visible:
+            self._ticker_text = text
+            self._ticker_visible = True
+            self.canvas.itemconfig('transport_ticker', text=text)
+            self._restart_ticker()
+
+    def _hide_ticker(self):
+        if not self._ticker_visible:
+            return
+        self._ticker_visible = False
+        self._stop_ticker()
+        self.canvas.itemconfig('transport_ticker', state='hidden')
+        for tag in TRANSPORT_TABLE_TAGS:
+            self.canvas.itemconfig(tag, state='normal')
+
+    def _stop_ticker(self):
+        if self._ticker_after_id:
+            self.root.after_cancel(self._ticker_after_id)
+            self._ticker_after_id = None
+
+    def _restart_ticker(self):
+        """Show the ticker static and centred if it fits, otherwise scroll it right-to-left"""
+        self._stop_ticker()
+        width = self.canvas.winfo_width()
+        if not self._ticker_visible or width < 2:
+            return
+
+        margin = int(width * 0.05)
+        self.canvas.coords('transport_ticker', 0, self._ticker_y)
+        bbox = self.canvas.bbox('transport_ticker')
+        text_width = (bbox[2] - bbox[0]) if bbox else 0
+
+        if text_width <= width - 2 * margin:
+            self.canvas.coords('transport_ticker', (width - text_width) / 2, self._ticker_y)
+            return
+
+        self.canvas.coords('transport_ticker', width, self._ticker_y)
+        self._ticker_after_id = self.root.after(TICKER_STEP_MS, self._scroll_ticker)
+
+    def _scroll_ticker(self):
+        self.canvas.move('transport_ticker', -TICKER_STEP_PX, 0)
+        bbox = self.canvas.bbox('transport_ticker')
+        if bbox and bbox[2] < 0:
+            self.canvas.coords('transport_ticker', self.canvas.winfo_width(), self._ticker_y)
+        self._ticker_after_id = self.root.after(TICKER_STEP_MS, self._scroll_ticker)
     
     def schedule_transport_display_update(self):
         """Schedule transport display updates (countdown refresh) using Tkinter's after()"""
@@ -1064,7 +1275,7 @@ class WeatherDisplay:
         """Start all update schedules using Tkinter's after() (more efficient than threads on Pi Zero)"""
         # Initial data fetch
         self.get_coordinates_from_city()
-        self.fetch_weather()
+        self.schedule_weather_update()
         self.fetch_air_quality()
         self.fetch_transport()
         self.update_datetime()
@@ -1072,7 +1283,6 @@ class WeatherDisplay:
         # Schedule periodic updates using after() instead of threads
         # This is more efficient on weak hardware as it avoids thread overhead
         # and doesn't require thread-safe UI updates
-        self._weather_after_id = self.root.after(REFRESH_INTERVAL * 1000, self.schedule_weather_update)
         self._aqi_after_id = self.root.after(60 * 1000, self.schedule_aqi_update)
         
         # Sync time updates to the start of the next minute
