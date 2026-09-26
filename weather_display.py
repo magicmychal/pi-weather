@@ -25,7 +25,7 @@ REFRESH_INTERVAL = 900  # Open-Meteo "current" data is 15-minutely, faster polli
 WEATHER_SLOT_OFFSET = 120  # Fetch 2 min after each quarter hour so the new data is published
 WEATHER_RETRY_DELAY = 120  # Retry sooner after a failed weather fetch (in seconds)
 TIME_UPDATE_INTERVAL = 59  # Update time every minute (in seconds)
-TRANSPORT_REFRESH_INTERVAL = 360  # Refresh transport API every 6 minutes (in seconds)
+TRANSPORT_REFRESH_INTERVAL = 120  # Refresh transport API every 2 minutes (in seconds)
 TRANSPORT_DISPLAY_INTERVAL = 60  # Update transport countdown display every minute (in seconds)
 
 # Text colour adapts to background luminance; the gap between thresholds prevents flicker
@@ -1134,7 +1134,8 @@ class WeatherDisplay:
             if len(minutes_list) >= 3:
                 break  # We have enough departures
             
-            when_str = dep.get('when')
+            # Realtime departure time may be missing; fall back to the timetable.
+            when_str = dep.get('when') or dep.get('plannedWhen')
             delay = dep.get('delay', 0) or 0
             delay_min = delay // 60 if delay > 0 else 0
             
